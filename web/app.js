@@ -15,7 +15,17 @@ const store = {
   sset(k, v) { try { sessionStorage.setItem(k, v); } catch { /* private mode */ } },
 };
 
+// In the Android app the same API is answered in-process through a bridge
+// object instead of over HTTP.
+const bridge = window.SynaxisAndroid;
+const PLATFORM = bridge ? 'android' : 'desktop';
+
 async function request(method, path, body) {
+  if (bridge) {
+    const reply = JSON.parse(bridge.call(method, path, body === undefined ? '' : JSON.stringify(body)));
+    if (reply.status >= 400) throw new Error(reply.body?.error || `Request failed (${reply.status})`);
+    return reply.body;
+  }
   const init = { method, headers: { 'X-Synaxis': '1' } };
   if (body !== undefined) {
     init.headers['Content-Type'] = 'application/json';
@@ -237,6 +247,7 @@ async function loadProfiles() {
   const st = await api.get('/api/state');
   S.profiles = st.profiles;
   S.settings = st.settings;
+  S.version = st.version;
   if (S.profile) S.profile = S.profiles.find((p) => p.id === S.profile.id) || null;
 }
 
@@ -280,8 +291,8 @@ function renderShell() {
             <hr>
             <a href="#/settings" data-action="close-menu">${I.gear}Settings</a>
             <button data-action="rescan">${I.refresh}Rescan Library</button>
-            <hr>
-            <button data-action="quit">${I.power}Quit Synaxis</button>
+            ${PLATFORM === 'desktop' ? `<hr>
+            <button data-action="quit">${I.power}Quit Synaxis</button>` : ''}
           </div>
         </div>
       </div>
@@ -523,10 +534,25 @@ function heroHtml(c) {
 function emptyLibrary() {
   const scan = S.status?.scan;
   const roots = S.settings?.roots || [];
+  if (S.status?.permission === false) {
+    return `<div class="empty">
+        <h1>Let Synaxis see your videos</h1>
+        <p>It needs permission to find the movies and shows stored on this phone. Nothing leaves your device.</p>
+        <button class="btn btn-play" data-action="grant">Allow access</button>
+      </div>`;
+  }
   if (scan?.running) {
     const detail = scan.phase === 'scanning' ? 'Searching your folders for videos…'
       : `Reading ${scan.done} of ${scan.total} videos…`;
     return `<div class="empty"><div class="spinner"></div><h1>Building your library</h1><p>${detail}</p></div>`;
+  }
+  if (PLATFORM === 'android') {
+    return `<div class="empty">
+        <h1>No videos found</h1>
+        <p>Synaxis shows videos on this phone larger than ${esc(S.settings?.min_size_mb ?? 200)} MB,
+        leaving out camera and screen recordings. Copy some movies or shows over, or change that in Settings.</p>
+        <a class="btn btn-play" href="#/settings">Settings</a>
+      </div>`;
   }
   return `<div class="empty">
       <h1>No videos found</h1>
@@ -577,13 +603,29 @@ async function renderSearch(page, q) {
 
 // ---------- Title modal ----------
 
-function openTitle(id) { setParam('title', id); }
+// Opening a title adds a history entry, so Back (browser or phone) closes it.
+// Closing it ourselves steps back over that entry rather than adding another,
+// which would make Back reopen it.
+function openTitle(id) {
+  S.modalPushed = true;
+  setParam('title', id);
+}
 function closeModal(silent = false) {
   if (!modalRoot.innerHTML) return;
   modalRoot.innerHTML = '';
   S.modal = null;
   document.body.classList.remove('modal-open');
-  if (!silent && route().params.has('title')) setParam('title', null);
+  if (silent || !route().params.has('title')) {
+    S.modalPushed = false;
+  } else if (S.modalPushed) {
+    S.modalPushed = false;
+    history.back();
+  } else {
+    const r = route();
+    r.params.delete('title');
+    const qs = r.params.toString();
+    history.replaceState(null, '', `#${r.path}${qs ? `?${qs}` : ''}`);
+  }
 }
 
 async function syncModal(id) {
@@ -692,6 +734,7 @@ function renderModal(keepScroll = false) {
               <button class="btn btn-play" data-action="play" data-title="${d.id}">${I.play}<span>${esc(playLabel(d))}</span></button>
               ${up.reason === 'resume' ? `<button class="btn btn-ghost" data-action="play" data-title="${d.id}" data-file="${up.file_id}" data-from-start="1">${I.restart}<span>Start Over</span></button>` : ''}
               <button class="icon-btn lg" data-action="my-list" data-title="${d.id}" title="${d.in_list ? 'Remove from My List' : 'Add to My List'}">${d.in_list ? I.check : I.plus}</button>
+              ${up.reason === 'resume' || up.reason === 'next' ? `<button class="icon-btn lg" data-action="dismiss" data-title="${d.id}" title="Remove from Continue Watching">${I.close}</button>` : ''}
               <button class="icon-btn lg ${allWatched ? 'ep-watched on' : ''}" data-action="watched" data-title="${d.id}" data-watched="${allWatched ? 0 : 1}" title="${allWatched ? 'Mark as unwatched' : 'Mark all as watched'}">${I.eye}</button>
             </div>
           </div>
@@ -784,6 +827,33 @@ function drawSettings() {
   const d = S.draft;
   const el = $('#settings');
   if (!el) return;
+  if (PLATFORM === 'android') {
+    el.innerHTML = `
+      <h1>Settings</h1>
+      <section class="panel">
+        <h2>What counts as a video</h2>
+        <p class="hint">Synaxis shows the videos stored on this phone. Skipping small files keeps out trailers, samples and clips.</p>
+        <label class="field"><span>Ignore files smaller than</span>
+          <span class="with-unit"><input type="number" name="min_size_mb" min="0" step="10" value="${esc(d.min_size_mb)}"> MB</span>
+        </label>
+        <label class="switch-row"><input type="checkbox" name="include_camera" ${d.include_camera ? 'checked' : ''}><span>Include camera and screen recordings</span></label>
+      </section>
+      <section class="panel">
+        <h2>Playback</h2>
+        <p class="hint">Videos open in VLC for Android, which tells Synaxis where you stopped. When an episode ends, the next one is offered automatically.</p>
+      </section>
+      <div class="settings-actions">
+        <button class="btn btn-play" data-action="save-settings">Save</button>
+        <button class="btn btn-ghost" data-action="rescan">${I.refresh}<span>Rescan Now</span></button>
+        <span class="scan-status" id="settings-scan"></span>
+      </div>
+      <section class="panel about">
+        <div class="stats" id="library-stats"></div>
+        <p style="margin-top:18px">Synaxis ${esc(S.version || '')} is free software under the GNU GPL v3 or later. Nothing leaves your phone.</p>
+      </section>`;
+    renderStatus();
+    return;
+  }
   el.innerHTML = `
     <h1>Settings</h1>
     <section class="panel">
@@ -828,6 +898,10 @@ function readSettingsForm() {
   const el = $('#settings');
   if (!el || !S.draft) return;
   S.draft.min_size_mb = Number($('[name=min_size_mb]', el).value) || 0;
+  if (PLATFORM === 'android') {
+    S.draft.include_camera = $('[name=include_camera]', el).checked;
+    return;
+  }
   S.draft.fullscreen = $('[name=fullscreen]', el).checked;
   S.draft.vlc = $('[name=vlc]', el).value.trim() || 'vlc';
 }
@@ -835,9 +909,9 @@ function readSettingsForm() {
 async function saveSettings() {
   readSettingsForm();
   try {
-    const res = await api.post('/api/settings', {
-      roots: S.draft.roots, min_size_mb: S.draft.min_size_mb, fullscreen: S.draft.fullscreen, vlc: S.draft.vlc,
-    });
+    const res = await api.post('/api/settings', PLATFORM === 'android'
+      ? { min_size_mb: S.draft.min_size_mb, include_camera: S.draft.include_camera }
+      : { roots: S.draft.roots, min_size_mb: S.draft.min_size_mb, fullscreen: S.draft.fullscreen, vlc: S.draft.vlc });
     S.settings = res.settings;
     S.draft = JSON.parse(JSON.stringify(res.settings));
     drawSettings();
@@ -962,7 +1036,10 @@ document.addEventListener('click', (e) => {
       S.draft.roots.splice(Number(el.dataset.index), 1);
       return drawSettings();
     case 'save-settings': return saveSettings();
+    case 'up-next-play': return playUpNext();
+    case 'up-next-cancel': return cancelUpNext();
     case 'quit': return quitApp();
+    case 'grant': return api.post('/api/permission').catch((err) => toast(err.message, 'error'));
     case 'reload': S.pageKey = null; return render();
     default: return undefined;
   }
@@ -1021,6 +1098,68 @@ async function quitApp() {
   closeModal(true);
   app.innerHTML = `<div class="gate"><span class="logo">${LOGO}</span>
     <h1>See you next time</h1><p style="color:var(--muted);margin:0">Synaxis has quit. You can close this tab.</p></div>`;
+}
+
+// ---------- Android hooks ----------
+
+// The phone's Back button: close whatever is on top. Returns whether it did;
+// otherwise the app goes back a page (or exits).
+window.synaxisBack = () => {
+  if ($('#up-next')) { cancelUpNext(); return true; }
+  if ($('form[data-form=profile]')) { modalRoot.innerHTML = ''; return true; }
+  if (S.modal) { closeModal(); return true; }
+  const menu = $('#menu');
+  if (menu && !menu.hidden) { closeMenu(); return true; }
+  return false;
+};
+
+// The player closed. After a finished episode, count down to the next one
+// like autoplay; Cancel (or Back) stops it.
+window.synaxisPlaybackEnded = (info) => {
+  softRefresh();
+  if (info && info.finished && info.next) showUpNext(info.next);
+};
+
+let upNextTimer = null;
+function showUpNext(next) {
+  cancelUpNext();
+  let left = 8;
+  const box = document.createElement('div');
+  box.id = 'up-next';
+  box.className = 'up-next';
+  box.setAttribute('role', 'dialog');
+  box.innerHTML = `
+    <div class="up-next-art">${next.image ? `<img src="${next.image}" alt="">` : placeholder(next.name)}</div>
+    <div class="up-next-body">
+      <div class="np-label">Next episode in <b id="up-next-count">${left}</b></div>
+      <div class="up-next-title">${esc(next.name)} · ${esc(next.label)}</div>
+      ${next.episode_title ? `<div class="up-next-sub">${esc(next.episode_title)}</div>` : ''}
+      <div class="up-next-actions">
+        <button class="btn btn-play" data-action="up-next-play">${I.play}<span>Play now</span></button>
+        <button class="btn btn-ghost" data-action="up-next-cancel">Cancel</button>
+      </div>
+    </div>`;
+  box.dataset.title = next.title;
+  box.dataset.file = next.file_id;
+  document.body.append(box);
+  upNextTimer = setInterval(() => {
+    left -= 1;
+    const count = $('#up-next-count');
+    if (count) count.textContent = left;
+    if (left <= 0) playUpNext();
+  }, 1000);
+}
+function playUpNext() {
+  const box = $('#up-next');
+  if (!box) return;
+  const { title, file } = box.dataset;
+  cancelUpNext();
+  play(title, file, false);
+}
+function cancelUpNext() {
+  clearInterval(upNextTimer);
+  upNextTimer = null;
+  $('#up-next')?.remove();
 }
 
 function closeMenu() {

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Synaxis</string>
+    <string name="vlc_needed_title">Play with VLC?</string>
+    <string name="vlc_needed_message">Synaxis plays videos in VLC, which lets it remember where you stopped and line up the next episode.</string>
+    <string name="get_vlc">Get VLC</string>
+    <string name="other_player">Use another app</string>
+    <string name="no_player">No app on this phone can play videos.</string>
+</resources>

@@ -550,6 +550,40 @@ svg { display: block; }
 .toast.out { opacity: 0; transform: translateY(8px); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(10px); } }
 
+/* ---------- Up next (phone autoplay) ---------- */
+
+.up-next {
+  position: fixed; left: 50%; bottom: 20px; z-index: 150; transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px)); display: flex; gap: 14px; padding: 12px;
+  background: rgba(23, 23, 28, .97); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .7); animation: toast-in .3s var(--ease);
+}
+.up-next-art { position: relative; flex: none; width: 150px; aspect-ratio: 16 / 9; border-radius: 6px; overflow: hidden; background: var(--surface-2); }
+.up-next-art img { width: 100%; height: 100%; object-fit: cover; }
+.up-next-art .ph span { font-size: 26px; }
+.up-next-body { min-width: 0; flex: 1; display: grid; gap: 4px; align-content: center; }
+.up-next-title { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.up-next-sub { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.up-next-actions { display: flex; gap: 8px; margin-top: 6px; }
+.up-next-actions .btn { height: 36px; padding: 0 14px; font-size: 14px; }
+.up-next-actions .btn svg { width: 18px; height: 18px; }
+
+/* ---------- Touch screens ---------- */
+
+/* No hover: a tap opens the title page, where all the actions are. Without
+   this, the last-tapped card would stay enlarged with its overlay showing. */
+@media (hover: none) {
+  .card:hover, .card:focus-visible { transform: none; box-shadow: none; }
+  .card:hover .card-hover, .card:focus-within .card-hover { opacity: 0; pointer-events: none; }
+  .card:hover .card-name, .card:focus-within .card-name { opacity: 1; }
+  .card-hover { pointer-events: none; }
+  .row-arrow { display: none; }
+  .episode:hover, .version:hover { background: transparent; }
+  .ep-play { opacity: 1; background: transparent; }
+  .ep-play i { width: 32px; height: 32px; }
+  * { -webkit-tap-highlight-color: transparent; }
+}
+
 /* ---------- Small screens ---------- */
 
 @media (max-width: 820px) {
@@ -572,6 +606,20 @@ svg { display: block; }
   .avatar-grid { grid-template-columns: repeat(4, 1fr); }
   .dialog { margin: 0; min-height: 100vh; border-radius: 0; padding: 24px 16px; }
   .dialog-row { flex-direction: column; }
+}
+
+/* Phones: section links get their own row of chips under the logo bar. */
+@media (max-width: 600px) {
+  :root { --nav-h: 104px; }
+  .nav { flex-wrap: wrap; align-content: center; row-gap: 10px; padding-top: 8px; padding-bottom: 8px; }
+  .nav-links { order: 3; width: 100%; gap: 8px; }
+  .nav-links a {
+    padding: 5px 13px; border: 1px solid rgba(255, 255, 255, .35); border-radius: 999px;
+    font-size: 13px; background: rgba(12, 12, 15, .35);
+  }
+  .nav-links a.active { background: #fff; color: #000; border-color: #fff; }
+  .nav-links a[data-nav="/home"] { display: none; }  /* the logo goes home */
+  .hero { min-height: 520px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

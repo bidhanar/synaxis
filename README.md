@@ -1,26 +1,45 @@
 # Synaxis
 
 An offline media aggregator: a streaming-style home screen for the videos
-already on your disk, in its own desktop window. Synaxis finds your movies and shows, groups episodes into
-series, makes artwork from the videos themselves, and plays everything in
-[VLC](https://www.videolan.org/vlc/), remembering where each person stopped.
+already on your computer or phone. Synaxis finds your movies and shows, groups
+episodes into series, makes artwork from the videos themselves, and plays
+everything in [VLC](https://www.videolan.org/vlc/), remembering where each
+person stopped. There's a Linux desktop app and an Android app; each works
+with the videos stored on its own device.
 
 ## Install
 
-Download the `.deb` for your Ubuntu version from the
-[latest release](https://github.com/bidhanar/synaxis/releases/latest) and run:
+Both come from the [latest release](https://github.com/bidhanar/synaxis/releases/latest).
+
+**Linux** (Ubuntu 24.04 or newer, amd64): download the `.deb` and run
 
 ```sh
-sudo apt install ./synaxis_0.2.0_ubuntu26.04_amd64.deb
+sudo apt install ./synaxis_0.3.0_amd64.deb
 ```
 
-Then open **Synaxis** from your app menu. `apt` pulls in VLC and the libraries
-it needs. Packages are built for Ubuntu 26.04 and 24.04 (amd64).
+then open **Synaxis** from your app menu. `apt` pulls in VLC and the libraries
+it needs.
 
-To publish a release, set the version in `project(Synaxis VERSION ...)` in
-`CMakeLists.txt`, commit, and push a matching tag (`git tag v0.2.0 && git
-push origin v0.2.0`). The [release workflow](.github/workflows/release.yml)
-builds, tests and attaches the packages.
+**Android** (10 or newer): download `synaxis_0.3.0_android.apk` on the phone
+and open it, allowing your browser to install apps if asked. Videos play in
+[VLC for Android](https://play.google.com/store/apps/details?id=org.videolan.vlc);
+Synaxis offers to fetch it the first time you press Play.
+
+### Publishing a release
+
+Set the version in `project(Synaxis VERSION ...)` in `CMakeLists.txt` (the
+Android app reads it too), commit, and push a matching tag:
+
+```sh
+git tag v0.3.0 && git push origin v0.3.0
+```
+
+The [release workflow](.github/workflows/release.yml) builds and tests both
+packages and attaches them to a GitHub Release. The APK is signed with the
+release key in `~/.android/synaxis-release.jks`; upload it to the repository's
+Actions secrets once with `scripts/set-android-signing-secrets.sh` (needs
+`gh auth login`). Keep a backup of the key and `android/keystore.properties`:
+phones only install updates signed with the same key.
 
 ## Features
 
@@ -40,9 +59,14 @@ builds, tests and attaches the packages.
   frames and cropping letterbox bars.
 - **Settings**: which folders to scan and the minimum file size (default
   200 MB, to skip samples and clips).
+- **On Android**: finds every video on the phone over the size limit (camera
+  and screen recordings left out unless you include them), resumes through
+  VLC for Android, and counts down to the next episode when one finishes.
 
-Everything runs locally. The UI is web-based, shown in a native WebKitGTK window
-and served on `127.0.0.1` only. Nothing goes over the network.
+Everything runs locally and nothing goes over the network. Both apps share one
+web UI (`web/`): on Linux it's served on `127.0.0.1` and shown in a WebKitGTK
+window; on Android it's bundled in the APK and talks to the app through an
+in-process bridge, with no network socket at all.
 
 ## Build
 
@@ -61,17 +85,33 @@ cd build && ctest --output-on-failure
 ### Debian/Ubuntu package
 
 ```sh
-cmake --build build --target package     # -> build/synaxis_<version>_amd64.deb
-sudo apt install ./build/synaxis_0.2.0_amd64.deb
+cmake -S . -B build-pkg -DCMAKE_BUILD_TYPE=Release -DSYNAXIS_BUNDLED_FFMPEG=ON
+cmake --build build-pkg --target package     # -> build-pkg/synaxis_<version>_amd64.deb
 ```
 
-The package installs `synaxis` and `synaxis_cli` to `/usr/bin`, adds the
-app-menu entry and icon, and pulls in VLC and the FFmpeg libraries it needs.
+`SYNAXIS_BUNDLED_FFMPEG` builds a minimal static FFmpeg into Synaxis (needs
+`nasm`) instead of linking the system's, whose library versions differ between
+Ubuntu releases; that's what lets one package install on all of them. The
+package installs `synaxis` and `synaxis_cli` to `/usr/bin`, adds the app-menu
+entry and icon, and pulls in VLC and WebKitGTK.
 Remove it with `sudo apt remove synaxis`; your history and settings in
 `~/.config` and `~/.local/share` are left alone.
 
 Without packaging, `cmake --install build --prefix ~/.local` installs the same
 files for your user only.
+
+### Android app
+
+Needs JDK 17+ and the Android SDK (platform 37). From `android/`:
+
+```sh
+./gradlew testDebugUnitTest assembleDebug    # -> app/build/outputs/apk/debug/
+./gradlew assembleRelease                    # signed when keystore.properties exists
+```
+
+The Kotlin code (`android/app/src/main/java/io/synaxis/app/`) is a port of the
+desktop logic (filename parser, catalog, watch history, home rows) and is
+tested against the same fixtures. The web UI comes straight from `web/`.
 
 ## Usage
 

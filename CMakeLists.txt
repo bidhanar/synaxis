@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(Synaxis VERSION 0.2.0 LANGUAGES CXX)
+project(Synaxis VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,7 +34,53 @@ endif()
 
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale)
+
+# FFmpeg reads durations and renders thumbnails. Packages bundle a minimal
+# static build, because every Ubuntu release ships a different FFmpeg
+# soname (libavcodec60, 61, 62...) and a .deb linked against one won't
+# install on the others. Development builds use the system copy.
+option(SYNAXIS_BUNDLED_FFMPEG "Build a minimal static FFmpeg into Synaxis (for portable packages)" OFF)
+add_library(synaxis_ffmpeg INTERFACE)
+if(SYNAXIS_BUNDLED_FFMPEG)
+    include(ExternalProject)
+    include(ProcessorCount)
+    ProcessorCount(jobs)
+    if(jobs EQUAL 0)
+        set(jobs 2)
+    endif()
+    set(ffmpeg_prefix ${CMAKE_CURRENT_BINARY_DIR}/ffmpeg)
+    set(ffmpeg_libs avformat avcodec swscale avutil)  # link order matters
+    list(TRANSFORM ffmpeg_libs REPLACE "(.+)" "${ffmpeg_prefix}/lib/lib\\1.a" OUTPUT_VARIABLE ffmpeg_archives)
+    ExternalProject_Add(ffmpeg_static
+        URL https://ffmpeg.org/releases/ffmpeg-8.1.3.tar.xz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        CONFIGURE_COMMAND <SOURCE_DIR>/configure
+            --prefix=${ffmpeg_prefix}
+            --enable-static --disable-shared --enable-pic
+            --disable-programs --disable-doc --disable-debug
+            --disable-autodetect --disable-network
+            --disable-avdevice --disable-avfilter --disable-swresample
+            --disable-everything
+            --enable-protocol=file
+            --enable-demuxer=matroska,mov,avi,mpegts,mpegps,flv,asf,ogg
+            --enable-decoder=h264,hevc,vp8,vp9,mpeg4,mpeg1video,mpeg2video,h263,flv,msmpeg4v1,msmpeg4v2,msmpeg4v3,wmv1,wmv2,wmv3,vc1,mjpeg,theora,rv30,rv40
+            --enable-parser=h264,hevc,vp8,vp9,mpeg4video,mpegvideo,vc1,mjpeg
+            --enable-encoder=mjpeg
+        BUILD_COMMAND make -j${jobs}
+        INSTALL_COMMAND make install
+        BUILD_BYPRODUCTS ${ffmpeg_archives})
+    file(MAKE_DIRECTORY ${ffmpeg_prefix}/include)
+    # Listed after the archives so it resolves their (wrapped) atan2f calls.
+    add_library(synaxis_glibc_compat STATIC src/glibc_compat.cpp)
+    target_include_directories(synaxis_ffmpeg INTERFACE ${ffmpeg_prefix}/include)
+    target_link_libraries(synaxis_ffmpeg INTERFACE
+        ${ffmpeg_archives} synaxis_glibc_compat m Threads::Threads)
+    target_link_options(synaxis_ffmpeg INTERFACE -Wl,--wrap=atan2f)
+    add_dependencies(synaxis_ffmpeg ffmpeg_static)
+else()
+    pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale)
+    target_link_libraries(synaxis_ffmpeg INTERFACE PkgConfig::FFMPEG)
+endif()
 
 add_library(synaxis_core
     src/catalog.cpp
@@ -53,7 +99,7 @@ add_library(synaxis_core
 target_include_directories(synaxis_core PUBLIC include)
 target_link_libraries(synaxis_core
     PUBLIC nlohmann_json::nlohmann_json Threads::Threads
-    PRIVATE PkgConfig::FFMPEG httplib::httplib)
+    PRIVATE synaxis_ffmpeg httplib::httplib)
 
 add_executable(synaxis_cli src/main.cpp)
 target_link_libraries(synaxis_cli PRIVATE synaxis_core)

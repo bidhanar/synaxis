@@ -1,13 +1,19 @@
-# Builds the .deb packages and publishes them as a GitHub Release.
+# Builds the Linux .deb and the Android .apk and publishes them as a GitHub Release.
 #
 # Release a version by bumping `project(Synaxis VERSION x.y.z)` in
 # CMakeLists.txt, committing, then pushing a matching tag:
 #
-#   git tag v0.2.0 && git push origin v0.2.0
+#   git tag v0.3.0 && git push origin v0.3.0
 #
-# A .deb links against the FFmpeg/WebKit versions of the release it was built
-# on, so each supported Ubuntu gets its own package. Running the workflow by
-# hand (Actions tab) builds and tests the packages without releasing them.
+# The .deb bundles a minimal static FFmpeg (SYNAXIS_BUNDLED_FFMPEG) and is
+# built on the oldest supported release, Ubuntu 24.04, so one package
+# installs on 24.04 and everything newer. Running the workflow by hand
+# (Actions tab) builds and tests the packages without releasing them.
+#
+# The APK is signed with the release key from these repository secrets (set
+# them with scripts/set-android-signing-secrets.sh): SYNAXIS_ANDROID_KEYSTORE_BASE64,
+# SYNAXIS_KEYSTORE_PASSWORD, SYNAXIS_KEY_ALIAS, SYNAXIS_KEY_PASSWORD. Every
+# release must use the same key, or phones refuse to install the update.
 
 name: Release
 
@@ -21,13 +27,9 @@ permissions:
 
 jobs:
   deb:
-    name: Ubuntu ${{ matrix.ubuntu }} package
+    name: Linux package (.deb)
     runs-on: ubuntu-latest
-    container: ubuntu:${{ matrix.ubuntu }}
-    strategy:
-      fail-fast: false
-      matrix:
-        ubuntu: ['26.04', '24.04']
+    container: ubuntu:24.04
     steps:
       - name: Install build dependencies
         env:
@@ -36,8 +38,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential cmake pkg-config git ca-certificates file dpkg-dev \
-            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
-            libwebkit2gtk-4.1-dev
+            nasm xz-utils curl libwebkit2gtk-4.1-dev
 
       - uses: actions/checkout@v4
 
@@ -53,7 +54,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSYNAXIS_BUNDLED_FFMPEG=ON
           cmake --build build -j"$(nproc)"
 
       - name: Test
@@ -62,20 +63,74 @@ jobs:
       - name: Package
         run: |
           cmake --build build --target package
-          mv build/synaxis_*_amd64.deb \
-             "synaxis_${{ steps.version.outputs.version }}_ubuntu${{ matrix.ubuntu }}_amd64.deb"
+          mv build/synaxis_*_amd64.deb .
           dpkg-deb --info synaxis_*.deb
 
       - uses: actions/upload-artifact@v4
         with:
-          name: synaxis-ubuntu${{ matrix.ubuntu }}
+          name: synaxis-deb
           path: synaxis_*.deb
+          if-no-files-found: error
+
+  apk:
+    name: Android app (.apk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Read the project version
+        id: version
+        run: |
+          version=$(sed -n 's/^project(Synaxis VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "v$version" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} doesn't match the version in CMakeLists.txt ($version)"
+            exit 1
+          fi
+
+      - name: Install the Android SDK platform
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-37.0" >/dev/null
+
+      - name: Restore the signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SYNAXIS_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::The SYNAXIS_ANDROID_KEYSTORE_BASE64 secret isn't set; run scripts/set-android-signing-secrets.sh"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+
+      - name: Test and build
+        working-directory: android
+        env:
+          SYNAXIS_KEYSTORE: ${{ runner.temp }}/release.jks
+          SYNAXIS_KEYSTORE_PASSWORD: ${{ secrets.SYNAXIS_KEYSTORE_PASSWORD }}
+          SYNAXIS_KEY_ALIAS: ${{ secrets.SYNAXIS_KEY_ALIAS }}
+          SYNAXIS_KEY_PASSWORD: ${{ secrets.SYNAXIS_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon testDebugUnitTest assembleRelease
+
+      - name: Package
+        run: |
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME"/build-tools/*/apksigner verify --print-certs "$apk" | head -3
+          cp "$apk" "synaxis_${{ steps.version.outputs.version }}_android.apk"
+          rm -f "$RUNNER_TEMP/release.jks"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synaxis-apk
+          path: synaxis_*.apk
           if-no-files-found: error
 
   release:
     name: Publish release
-    needs: deb
-    # Publish whichever packages built, even if one Ubuntu version failed.
+    needs: [deb, apk]
     if: ${{ !cancelled() && github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
     steps:
@@ -88,18 +143,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ls dist/*.deb
-          notes="Install the package for your Ubuntu version (check with \`lsb_release -r\`):
+          ls dist/*.deb dist/*.apk
+          notes="**Linux** (Ubuntu 24.04 or newer, amd64):
 
           \`\`\`sh
-          sudo apt install ./synaxis_${GITHUB_REF_NAME#v}_ubuntu26.04_amd64.deb
+          sudo apt install ./synaxis_${GITHUB_REF_NAME#v}_amd64.deb
           \`\`\`
 
           Using \`apt\` (rather than \`dpkg -i\`) also installs VLC and the libraries Synaxis needs.
-          Then open **Synaxis** from your app menu."
+          Then open **Synaxis** from your app menu.
+
+          **Android** (10 or newer): download \`synaxis_${GITHUB_REF_NAME#v}_android.apk\` on your phone and open it
+          (allow installing from your browser if asked). Videos play in VLC for Android."
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/*.deb --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/*.deb --repo "$GITHUB_REPOSITORY" \
+            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
               --title "Synaxis ${GITHUB_REF_NAME#v}" --notes "$notes"
           fi
