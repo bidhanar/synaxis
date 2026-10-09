@@ -51,6 +51,7 @@ json ToJson(const MediaEntry& entry) {
         {"source", m.source ? json(*m.source) : json(nullptr)},
         {"title", m.title ? json(*m.title) : json(nullptr)},
         {"tags", m.tags},
+        {"episode_title", m.episode_title ? json(*m.episode_title) : json(nullptr)},
     };
 }
 
@@ -63,6 +64,10 @@ MediaEntry FromJson(const json& j) {
     if (!j.at("source").is_null()) entry.metadata.source = j.at("source").get<std::string>();
     if (!j.at("title").is_null()) entry.metadata.title = j.at("title").get<std::string>();
     entry.metadata.tags = j.at("tags").get<std::vector<std::string>>();
+    // Absent in libraries written before episode titles were parsed.
+    if (j.contains("episode_title") && !j.at("episode_title").is_null()) {
+        entry.metadata.episode_title = j.at("episode_title").get<std::string>();
+    }
     return entry;
 }
 

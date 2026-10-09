@@ -19,9 +19,9 @@ namespace synaxis {
 
 class Player {
 public:
-    // Plays the file at `path` via libmpv, blocking until playback ends or
-    // the user quits the mpv window. Returns false if the file could not be
-    // opened/played.
+    // Plays the file at `path` in VLC, blocking until the user closes VLC or
+    // playback ends. Returns false if VLC could not be started or exited
+    // with an error.
     static bool Play(const std::filesystem::path& path);
 };
 

@@ -104,4 +104,43 @@ INSTANTIATE_TEST_SUITE_P(
         return SanitizeTestName(info.param.filename);
     });
 
+TEST(FilenameParserEpisodeTitle, TakesTextBetweenMarkerAndReleaseInfo) {
+    EXPECT_EQ(FilenameParser::parse("Crimson Static - S01E01 - Pilot [720p] [HDTV] [x264].mkv")
+                  .episode_title,
+              "Pilot");
+    EXPECT_EQ(FilenameParser::parse(
+                  "Rick.and.Morty.S09E06.Erickerhead.1080p.WEBRip.10Bit.DDP5.1.x265-NeoNoir.mkv")
+                  .episode_title,
+              "Erickerhead");
+    EXPECT_EQ(FilenameParser::parse("Show.S02E03.The.Long.Night.720p.mkv").episode_title,
+              "The Long Night");
+}
+
+TEST(FilenameParserEpisodeTitle, AbsentWhenOnlyReleaseInfoFollows) {
+    EXPECT_EQ(FilenameParser::parse("The.Silent.Orbit.S01E01.1080p.WEB-DL.x264-SPARKS.mkv")
+                  .episode_title,
+              std::nullopt);
+    EXPECT_EQ(FilenameParser::parse("[TAoE] Crimson Static - 2x09 IMAX [2160p][BluRay][x265].mkv")
+                  .episode_title,
+              std::nullopt);
+    EXPECT_EQ(FilenameParser::parse("Crimson.Static.S01E10.PROPER.1080p.WEB-DL.x264-EVO.mkv")
+                  .episode_title,
+              std::nullopt);
+    EXPECT_EQ(FilenameParser::parse("Show.S01E01.mkv").episode_title, std::nullopt);
+}
+
+TEST(FilenameParserRealWorld, HandlesCommonMovieNames) {
+    ParsedFilename yify = FilenameParser::parse("A.Beautiful.Mind.2001.1080p.BrRip.x264.YIFY.mp4");
+    EXPECT_EQ(yify.title, "A Beautiful Mind");
+    EXPECT_EQ(yify.year, 2001);
+    EXPECT_EQ(yify.source, "BrRip");
+    EXPECT_FALSE(yify.season);
+
+    ParsedFilename amzn =
+        FilenameParser::parse("Obsession.2026.1080p.AMZN.WEB-DL[Ben The Men].mp4");
+    EXPECT_EQ(amzn.title, "Obsession");
+    EXPECT_EQ(amzn.year, 2026);
+    EXPECT_EQ(amzn.source, "WEB-DL");
+}
+
 }  // namespace

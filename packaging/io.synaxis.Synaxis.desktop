@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Synaxis
+GenericName=Media Library
+Comment=Browse and play your local movies and shows
+Exec=synaxis
+Icon=synaxis
+Terminal=false
+Categories=AudioVideo;Video;Player;
+Keywords=movies;tv;shows;video;library;vlc;
+StartupNotify=true
+StartupWMClass=synaxis
+Actions=quit;
+
+[Desktop Action quit]
+Name=Quit Synaxis
+Exec=synaxis --quit

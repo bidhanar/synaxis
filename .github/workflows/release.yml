@@ -1,0 +1,105 @@
+# Builds the .deb packages and publishes them as a GitHub Release.
+#
+# Release a version by bumping `project(Synaxis VERSION x.y.z)` in
+# CMakeLists.txt, committing, then pushing a matching tag:
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# A .deb links against the FFmpeg/WebKit versions of the release it was built
+# on, so each supported Ubuntu gets its own package. Running the workflow by
+# hand (Actions tab) builds and tests the packages without releasing them.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    name: Ubuntu ${{ matrix.ubuntu }} package
+    runs-on: ubuntu-latest
+    container: ubuntu:${{ matrix.ubuntu }}
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ['26.04', '24.04']
+    steps:
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config git ca-certificates file dpkg-dev \
+            libavformat-dev libavcodec-dev libavutil-dev libswscale-dev \
+            libwebkit2gtk-4.1-dev
+
+      - uses: actions/checkout@v4
+
+      - name: Read the project version
+        id: version
+        run: |
+          version=$(sed -n 's/^project(Synaxis VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "v$version" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} doesn't match the version in CMakeLists.txt ($version)"
+            exit 1
+          fi
+
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+
+      - name: Test
+        run: cd build && ctest --output-on-failure
+
+      - name: Package
+        run: |
+          cmake --build build --target package
+          mv build/synaxis_*_amd64.deb \
+             "synaxis_${{ steps.version.outputs.version }}_ubuntu${{ matrix.ubuntu }}_amd64.deb"
+          dpkg-deb --info synaxis_*.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synaxis-ubuntu${{ matrix.ubuntu }}
+          path: synaxis_*.deb
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: deb
+    # Publish whichever packages built, even if one Ubuntu version failed.
+    if: ${{ !cancelled() && github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create the release with the packages attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls dist/*.deb
+          notes="Install the package for your Ubuntu version (check with \`lsb_release -r\`):
+
+          \`\`\`sh
+          sudo apt install ./synaxis_${GITHUB_REF_NAME#v}_ubuntu26.04_amd64.deb
+          \`\`\`
+
+          Using \`apt\` (rather than \`dpkg -i\`) also installs VLC and the libraries Synaxis needs.
+          Then open **Synaxis** from your app menu."
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.deb --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.deb --repo "$GITHUB_REPOSITORY" \
+              --title "Synaxis ${GITHUB_REF_NAME#v}" --notes "$notes"
+          fi

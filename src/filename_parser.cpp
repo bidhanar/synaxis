@@ -62,11 +62,13 @@ ParsedFilename FilenameParser::parse(const std::string& filename) {
     static const std::regex kAltPattern(R"(\b(\d{1,2})x(\d{2})\b)");
 
     std::smatch match;
+    std::optional<size_t> episode_marker_end;
     if (std::regex_search(filename, match, kStandardPattern) ||
         std::regex_search(filename, match, kAltPattern)) {
         result.season = std::stoi(match[1]);
         result.episode = std::stoi(match[2]);
         consider_cutoff(match.position(0));
+        episode_marker_end = match.position(0) + match.length(0);
     }
 
     // Release year — movies don't have a season/episode marker, so this is
@@ -81,7 +83,7 @@ ParsedFilename FilenameParser::parse(const std::string& filename) {
     // Rip source — describes how the file was captured, not something
     // an encoded stream can reveal, so it must come from the filename.
     static const std::regex kSourcePattern(
-        R"(\b(WEB-DL|WEBRip|BluRay|HDTV|HDTS|CAM)\b)",
+        R"(\b(WEB-DL|WEBRip|BluRay|BrRip|BDRip|DVDRip|HDRip|HDTV|HDTS|CAM)\b)",
         std::regex::icase);
     if (std::regex_search(filename, match, kSourcePattern)) {
         result.source = match[1];
@@ -103,6 +105,22 @@ ParsedFilename FilenameParser::parse(const std::string& filename) {
                                           : std::filesystem::path(filename).stem().string();
     std::string title = CleanTitle(raw_title);
     if (!title.empty()) result.title = title;
+
+    // Episode name: whatever sits between the episode marker and the first
+    // piece of release metadata after it (resolution, codec, source, tags,
+    // a bracketed group...).
+    const std::string stem = std::filesystem::path(filename).stem().string();
+    if (episode_marker_end && *episode_marker_end < stem.size()) {
+        static const std::regex kEpisodeTitleEnd(
+            R"(\[|\(|\b(?:\d{3,4}[pi]|[xh]\.?26[45]|HEVC|XviD|10.?bit|(?:19|20)\d{2}|)"
+            R"(WEB-DL|WEBRip|BluRay|BrRip|BDRip|DVDRip|HDRip|HDTV|HDTS|CAM|)"
+            R"(PROPER|REPACK|IMAX|HDR|AMZN|NF|UHD)\b)",
+            std::regex::icase);
+        std::string rest = stem.substr(*episode_marker_end);
+        if (std::regex_search(rest, match, kEpisodeTitleEnd)) rest.resize(match.position(0));
+        std::string episode_title = CleanTitle(rest);
+        if (!episode_title.empty()) result.episode_title = episode_title;
+    }
 
     return result;
 }

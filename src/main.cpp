@@ -54,6 +54,7 @@ void PrintParsed(const fs::path& path, const synaxis::ParsedFilename& parsed) {
     std::cout << "  year:    " << (parsed.year ? std::to_string(*parsed.year) : "-") << "\n";
     std::cout << "  season:  " << (parsed.season ? std::to_string(*parsed.season) : "-") << "\n";
     std::cout << "  episode: " << (parsed.episode ? std::to_string(*parsed.episode) : "-") << "\n";
+    std::cout << "  ep name: " << (parsed.episode_title ? *parsed.episode_title : "-") << "\n";
     std::cout << "  source:  " << (parsed.source ? *parsed.source : "-") << "\n";
     std::cout << "  tags:    ";
     if (parsed.tags.empty()) {

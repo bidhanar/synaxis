@@ -29,6 +29,9 @@ namespace synaxis {
 // fallback series/movie name derived from the filename itself, for when the
 // user doesn't supply one; `year` (movies) doubles as the signal that lets
 // `title` know where to stop when there's no season/episode marker.
+// `episode_title` is the episode's own name when the filename carries one
+// between the episode marker and the release metadata ("... S01E01 - Pilot
+// [720p]"); scene-style names usually don't.
 struct ParsedFilename {
     std::optional<int> season;
     std::optional<int> episode;
@@ -36,6 +39,7 @@ struct ParsedFilename {
     std::optional<std::string> source;
     std::optional<std::string> title;
     std::vector<std::string> tags;
+    std::optional<std::string> episode_title;
 
     bool operator==(const ParsedFilename&) const = default;
 };
