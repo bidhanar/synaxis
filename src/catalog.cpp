@@ -12,6 +12,7 @@
 // GNU General Public License for more details.
 
 #include "synaxis/catalog.hpp"
+#include "synaxis/platform.hpp"
 
 #include "synaxis/media_library.hpp"
 
@@ -49,7 +50,7 @@ std::string Hex16(std::uint64_t v) {
 }
 
 bool HasVideoExtension(const fs::path& path) {
-    std::string ext = path.extension().string();
+    std::string ext = PathToUtf8(path.extension());
     if (ext.size() < 2) return false;
     ext.erase(0, 1);
     std::transform(ext.begin(), ext.end(), ext.begin(),
@@ -105,10 +106,10 @@ std::string FallbackName(const VideoFile& file) {
     static const std::regex kSeasonDir(R"(^(season|series|s)[\s._-]*\d+$)", std::regex::icase);
     if (file.metadata.season) {
         fs::path dir = file.path.parent_path();
-        if (std::regex_match(dir.filename().string(), kSeasonDir)) dir = dir.parent_path();
-        if (!dir.filename().empty()) return dir.filename().string();
+        if (std::regex_match(PathToUtf8(dir.filename()), kSeasonDir)) dir = dir.parent_path();
+        if (!dir.filename().empty()) return PathToUtf8(dir.filename());
     }
-    return file.path.stem().string();
+    return PathToUtf8(file.path.stem());
 }
 
 int Height(const VideoFile& f) {
@@ -125,7 +126,7 @@ bool BetterCopy(const VideoFile& a, const VideoFile& b) {
 } // namespace
 
 std::string FileId(const fs::path& path) {
-    return Hex16(Fnv1a(path.string()));
+    return Hex16(Fnv1a(PathToUtf8(path)));
 }
 
 std::vector<VideoFile> ScanVideoFiles(const ScanOptions& options, const std::atomic<bool>* cancel) {
@@ -143,8 +144,7 @@ std::vector<VideoFile> ScanVideoFiles(const ScanOptions& options, const std::ato
             fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
             for (; !ec && it != fs::directory_iterator(); it.increment(ec)) {
                 const fs::directory_entry& entry = *it;
-                const std::string name = entry.path().filename().string();
-                if (name.empty() || name.front() == '.') continue;
+                if (IsHiddenEntry(entry)) continue;
 
                 std::error_code entry_ec;
                 if (entry.is_directory(entry_ec)) {
@@ -163,7 +163,7 @@ std::vector<VideoFile> ScanVideoFiles(const ScanOptions& options, const std::ato
                 file.path = canonical;
                 file.size = size;
                 file.mtime = UnixSeconds(entry.last_write_time(entry_ec));
-                file.metadata = FilenameParser::parse(canonical.filename().string());
+                file.metadata = FilenameParser::parse(PathToUtf8(canonical.filename()));
                 files.push_back(std::move(file));
             }
         }
@@ -185,7 +185,7 @@ void SaveVideoFiles(const std::vector<VideoFile>& files, const fs::path& path) {
                     {"codec", f.info->video_codec},
                     {"hdr", f.info->hdr}};
         }
-        arr.push_back({{"path", f.path.string()},
+        arr.push_back({{"path", PathToUtf8(f.path)},
                        {"size", f.size},
                        {"mtime", f.mtime},
                        {"probed", f.probed},
@@ -213,12 +213,12 @@ std::vector<VideoFile> LoadVideoFiles(const fs::path& path) {
     try {
         for (const json& j : root.at("files")) {
             VideoFile f;
-            f.path = j.at("path").get<std::string>();
+            f.path = PathFromUtf8(j.at("path").get<std::string>());
             f.id = FileId(f.path);
             f.size = j.at("size").get<std::uintmax_t>();
             f.mtime = j.at("mtime").get<std::int64_t>();
             f.probed = j.value("probed", false);
-            f.metadata = FilenameParser::parse(f.path.filename().string());
+            f.metadata = FilenameParser::parse(PathToUtf8(f.path.filename()));
             if (const json& info = j.at("info"); !info.is_null()) {
                 f.info = MediaInfo{info.at("duration").get<double>(),
                                    info.at("width").get<int>(),
@@ -252,7 +252,7 @@ Catalog::Catalog(std::vector<VideoFile> files) : files_(std::move(files)) {
         std::string name = m.title ? *m.title : FallbackName(f);
         std::string key = NormalizeKey(name);
         if (key.empty()) {
-            name = f.path.stem().string();
+            name = PathToUtf8(f.path.stem());
             key = NormalizeKey(name);
         }
         key = (episode ? "show:" : "movie:") + key;

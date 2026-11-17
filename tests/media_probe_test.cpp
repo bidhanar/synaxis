@@ -13,6 +13,8 @@
 
 #include <gtest/gtest.h>
 
+#include "fixtures.hpp"
+
 #include <filesystem>
 #include <fstream>
 
@@ -22,7 +24,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-const fs::path kMovies = fs::path(FIXTURES_DIR) / "media_library" / "Movies";
+const fs::path kMovies = FixturesDir() / "media_library" / "Movies";
 
 TEST(MediaProbeTest, ReadsStreamFactsFromARealFile) {
     auto info = synaxis::ProbeMedia(kMovies / "Inception.2010.1080p.BluRay.x264-SPARKS.mp4");
@@ -48,12 +50,17 @@ TEST(MediaProbeTest, WritesAJpegThumbnail) {
     ASSERT_TRUE(info);
     ASSERT_TRUE(synaxis::WriteThumbnail(video, out, info->duration, 320));
 
-    std::ifstream in(out, std::ios::binary);
-    unsigned char magic[2] = {};
-    in.read(reinterpret_cast<char*>(magic), 2);
-    EXPECT_EQ(magic[0], 0xFF);
-    EXPECT_EQ(magic[1], 0xD8);
-    EXPECT_FALSE(fs::exists(out.string() + ".tmp"));
+    {
+        // Closed before the remove below: Windows can't delete an open file.
+        std::ifstream in(out, std::ios::binary);
+        unsigned char magic[2] = {};
+        in.read(reinterpret_cast<char*>(magic), 2);
+        EXPECT_EQ(magic[0], 0xFF);
+        EXPECT_EQ(magic[1], 0xD8);
+    }
+    fs::path tmp = out;
+    tmp += ".tmp";
+    EXPECT_FALSE(fs::exists(tmp));
     fs::remove(out);
 }
 

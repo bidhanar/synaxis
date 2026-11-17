@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(Synaxis VERSION 0.3.0 LANGUAGES CXX)
+if(WIN32)
+    enable_language(RC)  # icon, version info and manifest
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,6 +10,15 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(FetchContent)
 include(GNUInstallDirs)
+
+if(WIN32)
+    # Windows 10 and later; NOMINMAX keeps windows.h's min/max macros away from std::min.
+    add_compile_definitions(_WIN32_WINNT=0x0A00 WINVER=0x0A00 NOMINMAX)
+endif()
+if(MINGW)
+    # One self-contained .exe: no libstdc++/libgcc/winpthread DLLs to ship.
+    add_link_options(-static)
+endif()
 
 # Header-only dependencies: use an installed copy when there is one,
 # otherwise fetch it, so building doesn't need root to install -dev packages.
@@ -26,6 +38,8 @@ if(NOT httplib_FOUND)
     set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
     set(HTTPLIB_USE_ZSTD_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
     set(HTTPLIB_INSTALL OFF CACHE BOOL "" FORCE)  # keep its headers out of our package
+    # Only 127.0.0.1 is ever looked up; and MinGW lacks the API its async lookup uses.
+    set(HTTPLIB_USE_NON_BLOCKING_GETADDRINFO OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(httplib
         URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.26.0.tar.gz
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
@@ -33,13 +47,18 @@ if(NOT httplib_FOUND)
 endif()
 
 find_package(Threads REQUIRED)
-find_package(PkgConfig REQUIRED)
+if(NOT WIN32)
+    find_package(PkgConfig REQUIRED)
+endif()
 
 # FFmpeg reads durations and renders thumbnails. Packages bundle a minimal
 # static build, because every Ubuntu release ships a different FFmpeg
 # soname (libavcodec60, 61, 62...) and a .deb linked against one won't
 # install on the others. Development builds use the system copy.
 option(SYNAXIS_BUNDLED_FFMPEG "Build a minimal static FFmpeg into Synaxis (for portable packages)" OFF)
+if(WIN32)
+    set(SYNAXIS_BUNDLED_FFMPEG ON CACHE BOOL "" FORCE)  # there's no system FFmpeg to use
+endif()
 add_library(synaxis_ffmpeg INTERFACE)
 if(SYNAXIS_BUNDLED_FFMPEG)
     include(ExternalProject)
@@ -51,11 +70,17 @@ if(SYNAXIS_BUNDLED_FFMPEG)
     set(ffmpeg_prefix ${CMAKE_CURRENT_BINARY_DIR}/ffmpeg)
     set(ffmpeg_libs avformat avcodec swscale avutil)  # link order matters
     list(TRANSFORM ffmpeg_libs REPLACE "(.+)" "${ffmpeg_prefix}/lib/lib\\1.a" OUTPUT_VARIABLE ffmpeg_archives)
+    set(ffmpeg_cross "")
+    if(CMAKE_CROSSCOMPILING AND WIN32)
+        set(ffmpeg_cross --enable-cross-compile --target-os=mingw32 --arch=x86_64
+            --cross-prefix=x86_64-w64-mingw32-)
+    endif()
     ExternalProject_Add(ffmpeg_static
         URL https://ffmpeg.org/releases/ffmpeg-8.1.3.tar.xz
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         CONFIGURE_COMMAND <SOURCE_DIR>/configure
             --prefix=${ffmpeg_prefix}
+            ${ffmpeg_cross}
             --enable-static --disable-shared --enable-pic
             --disable-programs --disable-doc --disable-debug
             --disable-autodetect --disable-network
@@ -70,12 +95,17 @@ if(SYNAXIS_BUNDLED_FFMPEG)
         INSTALL_COMMAND make install
         BUILD_BYPRODUCTS ${ffmpeg_archives})
     file(MAKE_DIRECTORY ${ffmpeg_prefix}/include)
-    # Listed after the archives so it resolves their (wrapped) atan2f calls.
-    add_library(synaxis_glibc_compat STATIC src/glibc_compat.cpp)
     target_include_directories(synaxis_ffmpeg INTERFACE ${ffmpeg_prefix}/include)
-    target_link_libraries(synaxis_ffmpeg INTERFACE
-        ${ffmpeg_archives} synaxis_glibc_compat m Threads::Threads)
-    target_link_options(synaxis_ffmpeg INTERFACE -Wl,--wrap=atan2f)
+    if(WIN32)
+        # bcrypt: libavutil's random numbers.
+        target_link_libraries(synaxis_ffmpeg INTERFACE ${ffmpeg_archives} bcrypt Threads::Threads)
+    else()
+        # Listed after the archives so it resolves their (wrapped) atan2f calls.
+        add_library(synaxis_glibc_compat STATIC src/glibc_compat.cpp)
+        target_link_libraries(synaxis_ffmpeg INTERFACE
+            ${ffmpeg_archives} synaxis_glibc_compat m Threads::Threads)
+        target_link_options(synaxis_ffmpeg INTERFACE -Wl,--wrap=atan2f)
+    endif()
     add_dependencies(synaxis_ffmpeg ffmpeg_static)
 else()
     pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale)
@@ -91,6 +121,7 @@ add_library(synaxis_core
     src/library_service.cpp
     src/media_library.cpp
     src/media_probe.cpp
+    src/platform.cpp
     src/playback_manager.cpp
     src/player.cpp
     src/process.cpp
@@ -102,7 +133,17 @@ target_link_libraries(synaxis_core
     PUBLIC nlohmann_json::nlohmann_json Threads::Threads
     PRIVATE synaxis_ffmpeg httplib::httplib)
 
-add_executable(synaxis_cli src/main.cpp)
+# Icon, version info and manifest (UTF-8 code page, DPI awareness) for the .exe files.
+set(SYNAXIS_WIN_RESOURCES "")
+if(WIN32)
+    set(SYNAXIS_ICO ${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows/synaxis.ico)
+    set(SYNAXIS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows/synaxis.manifest)
+    set(SYNAXIS_WIN_RESOURCES ${CMAKE_CURRENT_BINARY_DIR}/generated/synaxis.rc)
+    configure_file(packaging/windows/synaxis.rc.in ${SYNAXIS_WIN_RESOURCES} @ONLY)
+    target_link_libraries(synaxis_core PUBLIC ws2_32)  # FreeLocalPort
+endif()
+
+add_executable(synaxis_cli src/main.cpp ${SYNAXIS_WIN_RESOURCES})
 target_link_libraries(synaxis_cli PRIVATE synaxis_core)
 target_compile_definitions(synaxis_cli PRIVATE SYNAXIS_VERSION="${PROJECT_VERSION}")
 
@@ -123,14 +164,38 @@ add_custom_command(
     COMMENT "Embedding web UI"
     VERBATIM)
 
-add_executable(synaxis src/app_main.cpp src/server.cpp ${SYNAXIS_WEB_ASSETS_CPP})
+add_executable(synaxis src/app_main.cpp src/server.cpp ${SYNAXIS_WEB_ASSETS_CPP} ${SYNAXIS_WIN_RESOURCES})
 target_include_directories(synaxis PRIVATE src)
 target_link_libraries(synaxis PRIVATE synaxis_core httplib::httplib)
 target_compile_definitions(synaxis PRIVATE SYNAXIS_VERSION="${PROJECT_VERSION}")
 
-# Its own desktop window via WebKitGTK; without it, the UI opens in the browser.
-option(SYNAXIS_WINDOW "Show the UI in a native window (needs libwebkit2gtk-4.1-dev)" ON)
-if(SYNAXIS_WINDOW)
+# Its own desktop window via WebKitGTK (Linux) or Edge WebView2 (Windows);
+# without one, the UI opens in the browser.
+option(SYNAXIS_WINDOW "Show the UI in a native window (needs libwebkit2gtk-4.1-dev on Linux)" ON)
+if(WIN32)
+    # A windowed program: no console window when started from Explorer.
+    set_target_properties(synaxis PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_libraries(synaxis PRIVATE shell32)
+endif()
+if(SYNAXIS_WINDOW AND WIN32)
+    set(WEBVIEW_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(WEBVIEW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(WEBVIEW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(WEBVIEW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(WEBVIEW_BUILD_AMALGAMATION OFF CACHE BOOL "" FORCE)
+    set(WEBVIEW_INSTALL_TARGETS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(webview
+        URL https://github.com/webview/webview/archive/refs/tags/0.12.0.tar.gz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(webview)
+    if(CMAKE_CROSSCOMPILING)
+        target_include_directories(webview_core_static PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/mingw-include)
+        target_include_directories(synaxis PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/mingw-include)
+    endif()
+    target_sources(synaxis PRIVATE src/app_window_win.cpp)
+    target_link_libraries(synaxis PRIVATE webview::core_static)
+    target_compile_definitions(synaxis PRIVATE SYNAXIS_HAS_WINDOW)
+elseif(SYNAXIS_WINDOW)
     pkg_check_modules(WEBKIT IMPORTED_TARGET webkit2gtk-4.1 gtk+-3.0)
     if(WEBKIT_FOUND)
         target_sources(synaxis PRIVATE src/app_window.cpp)
@@ -142,6 +207,12 @@ if(SYNAXIS_WINDOW)
     endif()
 endif()
 
+if(WIN32)
+    # A portable folder: the programs and a few text files side by side.
+    install(TARGETS synaxis synaxis_cli RUNTIME DESTINATION .)
+    install(FILES LICENSE DESTINATION . RENAME LICENSE.txt)
+    install(FILES "packaging/windows/READ ME.txt" DESTINATION .)
+else()
 install(TARGETS synaxis synaxis_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES packaging/io.synaxis.Synaxis.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 install(FILES web/icon.svg
@@ -153,6 +224,7 @@ foreach(size 16 24 32 48 64 128 256 512)
             RENAME synaxis.png)
 endforeach()
 install(FILES LICENSE DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/synaxis RENAME copyright)
+endif()
 
 option(SYNAXIS_BUILD_TESTS "Build the unit tests" ON)
 if(SYNAXIS_BUILD_TESTS)
@@ -160,10 +232,18 @@ if(SYNAXIS_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-# ---- Debian package: cmake --build build --target package ----
-set(CPACK_GENERATOR DEB)
+# ---- Packages: cmake --build build --target package ----
+# A .deb on Linux; a .zip to unpack anywhere on Windows.
 set(CPACK_PACKAGE_NAME synaxis)
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+if(WIN32)
+    set(CPACK_GENERATOR ZIP)
+    set(CPACK_PACKAGE_FILE_NAME synaxis-${PROJECT_VERSION}-windows-x64)
+    set(CPACK_STRIP_FILES ON)
+    include(CPack)
+    return()
+endif()
+set(CPACK_GENERATOR DEB)
 set(CPACK_PACKAGE_CONTACT "bidhanar <arya.bidhan1729@gmail.com>")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Streaming-style home screen for the videos on your disk")
 set(CPACK_PACKAGE_DESCRIPTION

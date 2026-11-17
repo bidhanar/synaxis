@@ -12,6 +12,8 @@
 // GNU General Public License for more details.
 
 #include "synaxis/filename_parser.hpp"
+#include "synaxis/platform.hpp"
+
 #include <algorithm>
 #include <filesystem>
 #include <regex>
@@ -102,14 +104,14 @@ ParsedFilename FilenameParser::parse(const std::string& filename) {
     }
 
     std::string raw_title = title_cutoff ? filename.substr(0, *title_cutoff)
-                                          : std::filesystem::path(filename).stem().string();
+                                          : PathToUtf8(PathFromUtf8(filename).stem());
     std::string title = CleanTitle(raw_title);
     if (!title.empty()) result.title = title;
 
     // Episode name: whatever sits between the episode marker and the first
     // piece of release metadata after it (resolution, codec, source, tags,
     // a bracketed group...).
-    const std::string stem = std::filesystem::path(filename).stem().string();
+    const std::string stem = PathToUtf8(PathFromUtf8(filename).stem());
     if (episode_marker_end && *episode_marker_end < stem.size()) {
         static const std::regex kEpisodeTitleEnd(
             R"(\[|\(|\b(?:\d{3,4}[pi]|[xh]\.?26[45]|HEVC|XviD|10.?bit|(?:19|20)\d{2}|)"

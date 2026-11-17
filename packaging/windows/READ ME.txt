@@ -1,0 +1,30 @@
+Synaxis for Windows
+===================
+
+Your movies and shows, like a streaming service, played in VLC.
+
+Before you start
+  Install VLC: https://www.videolan.org/vlc/
+  (Synaxis finds it in its usual place; otherwise set the VLC program in Settings.)
+
+Start
+  Double-click synaxis.exe. The first time, Synaxis looks for videos larger
+  than 200 MB in your user folder; choose other folders under Settings
+  (the profile menu, top right).
+
+  If Windows SmartScreen warns about an unrecognised app, choose
+  "More info", then "Run anyway".
+
+Quit
+  Close the window, or "Quit Synaxis" in the profile menu.
+
+Your settings and history
+  Settings:                        %APPDATA%\Synaxis\config.json
+  Library, history and thumbnails: %LOCALAPPDATA%\Synaxis
+  Deleting the Synaxis folder removes the program; these stay.
+
+Watch Together
+  Watch with up to 8 people in other places, each from their own copy of the
+  video. See "Watch Together" in the top bar.
+
+Synaxis is free software under the GNU GPL v3 or later (LICENSE.txt).

@@ -12,6 +12,7 @@
 // GNU General Public License for more details.
 
 #include "synaxis/media_library.hpp"
+#include "synaxis/platform.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -44,7 +45,7 @@ std::regex BuildVideoExtensionRegex(const std::vector<std::string>& extensions) 
 json ToJson(const MediaEntry& entry) {
     const ParsedFilename& m = entry.metadata;
     return json{
-        {"path", entry.path.string()},
+        {"path", PathToUtf8(entry.path)},
         {"season", m.season ? json(*m.season) : json(nullptr)},
         {"episode", m.episode ? json(*m.episode) : json(nullptr)},
         {"year", m.year ? json(*m.year) : json(nullptr)},
@@ -88,11 +89,11 @@ std::vector<MediaEntry> MediaLibrary::Scan(const std::filesystem::path& root,
     std::vector<MediaEntry> entries;
     for (const auto& dir_entry : std::filesystem::recursive_directory_iterator(root)) {
         if (!dir_entry.is_regular_file()) continue;
-        if (!std::regex_search(dir_entry.path().filename().string(), video_extension)) continue;
+        if (!std::regex_search(PathToUtf8(dir_entry.path().filename()), video_extension)) continue;
 
         MediaEntry entry;
         entry.path = std::filesystem::canonical(dir_entry.path());
-        entry.metadata = FilenameParser::parse(dir_entry.path().filename().string());
+        entry.metadata = FilenameParser::parse(PathToUtf8(dir_entry.path().filename()));
         entries.push_back(std::move(entry));
     }
 

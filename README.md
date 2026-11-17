@@ -4,8 +4,8 @@ An offline media aggregator: a streaming-style home screen for the videos
 already on your computer or phone. Synaxis finds your movies and shows, groups
 episodes into series, makes artwork from the videos themselves, and plays
 everything in [VLC](https://www.videolan.org/vlc/), remembering where each
-person stopped. There's a Linux desktop app and an Android app; each works
-with the videos stored on its own device.
+person stopped. There are desktop apps for Linux and Windows and an Android
+app; each works with the videos stored on its own device.
 
 ## Install
 
@@ -19,6 +19,11 @@ sudo apt install ./synaxis_0.3.0_amd64.deb
 
 then open **Synaxis** from your app menu. `apt` pulls in VLC and the libraries
 it needs.
+
+**Windows** (10 or 11, 64-bit): install [VLC](https://www.videolan.org/vlc/),
+download `synaxis-0.3.0-windows-x64.zip`, unzip it anywhere and double-click
+`synaxis.exe`. Settings live in `%APPDATA%\Synaxis`, the library cache and
+history in `%LOCALAPPDATA%\Synaxis`.
 
 **Android** (10 or newer): download `synaxis_0.3.0_android.apk` on the phone
 and open it, allowing your browser to install apps if asked. Videos play in
@@ -103,6 +108,25 @@ Remove it with `sudo apt remove synaxis`; your history and settings in
 
 Without packaging, `cmake --install build --prefix ~/.local` installs the same
 files for your user only.
+
+### Windows
+
+Cross-compiled from Linux with MinGW-w64; the tests run under Wine:
+
+```sh
+sudo apt install g++-mingw-w64-x86-64-posix nasm wine
+cmake -S . -B build-win -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake
+cmake --build build-win -j"$(nproc)"
+cd build-win && ctest                 # under Wine
+cmake --build . --target package      # -> synaxis-<version>-windows-x64.zip
+```
+
+FFmpeg is always built in, and the programs are linked statically, so the zip
+needs nothing but VLC. The window is Edge WebView2 (part of Windows 10 and
+11) through the [webview](https://github.com/webview/webview) library; where
+WebView2 is missing, Synaxis opens in the browser instead. The release
+workflow builds the zip the same way and runs the test programs on a real
+Windows machine.
 
 ### Android app
 

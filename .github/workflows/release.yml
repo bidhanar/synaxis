@@ -1,4 +1,5 @@
-# Builds the Linux .deb and the Android .apk and publishes them as a GitHub Release.
+# Builds the Linux .deb, the Windows .zip and the Android .apk and publishes
+# them as a GitHub Release.
 #
 # Release a version by bumping `project(Synaxis VERSION x.y.z)` in
 # CMakeLists.txt, committing, then pushing a matching tag:
@@ -9,6 +10,10 @@
 # built on the oldest supported release, Ubuntu 24.04, so one package
 # installs on 24.04 and everything newer. Running the workflow by hand
 # (Actions tab) builds and tests the packages without releasing them.
+#
+# The Windows build is cross-compiled on Linux with MinGW-w64 (as on a
+# developer's machine; see README), then its test programs run on a real
+# Windows machine.
 #
 # The APK is signed with the release key from these repository secrets (set
 # them with scripts/set-android-signing-secrets.sh): SYNAXIS_ANDROID_KEYSTORE_BASE64,
@@ -72,6 +77,78 @@ jobs:
           path: synaxis_*.deb
           if-no-files-found: error
 
+  windows:
+    name: Windows package (.zip)
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake git ca-certificates nasm xz-utils curl \
+            g++-mingw-w64-x86-64-posix
+
+      - uses: actions/checkout@v4
+
+      - name: Read the project version
+        id: version
+        run: |
+          version=$(sed -n 's/^project(Synaxis VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: |
+          cmake -S . -B build-win -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake
+          cmake --build build-win -j"$(nproc)"
+
+      - name: Package
+        run: |
+          cmake --build build-win --target package
+          mv build-win/synaxis-*-windows-x64.zip .
+          mkdir test-programs && cp build-win/tests/*.exe test-programs/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synaxis-windows
+          path: synaxis-*-windows-x64.zip
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-programs
+          path: test-programs
+          if-no-files-found: error
+
+  windows-test:
+    name: Windows tests
+    needs: windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4  # for tests/fixtures
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-test-programs
+          path: test-programs
+
+      - name: Run the tests
+        shell: pwsh
+        env:
+          SYNAXIS_FIXTURES_DIR: ${{ github.workspace }}\tests\fixtures
+        run: |
+          $failed = @()
+          foreach ($test in Get-ChildItem test-programs\*.exe) {
+            Write-Host "::group::$($test.Name)"
+            & $test.FullName --gtest_color=yes
+            if ($LASTEXITCODE -ne 0) { $failed += $test.Name }
+            Write-Host "::endgroup::"
+          }
+          if ($failed) { Write-Host "::error::Failed: $($failed -join ', ')"; exit 1 }
+
   apk:
     name: Android app (.apk)
     runs-on: ubuntu-latest
@@ -130,20 +207,21 @@ jobs:
 
   release:
     name: Publish release
-    needs: [deb, apk]
+    needs: [deb, windows, windows-test, apk]
     if: ${{ !cancelled() && github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: synaxis-*  # the packages, not the test programs
           merge-multiple: true
 
       - name: Create the release with the packages attached
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ls dist/*.deb dist/*.apk
+          ls dist/*.deb dist/*.zip dist/*.apk
           notes="**Linux** (Ubuntu 24.04 or newer, amd64):
 
           \`\`\`sh
@@ -152,6 +230,9 @@ jobs:
 
           Using \`apt\` (rather than \`dpkg -i\`) also installs VLC and the libraries Synaxis needs.
           Then open **Synaxis** from your app menu.
+
+          **Windows** (10 or 11, 64-bit): download \`synaxis-${GITHUB_REF_NAME#v}-windows-x64.zip\`, unzip it anywhere and
+          double-click \`synaxis.exe\`. Install [VLC](https://www.videolan.org/vlc/) first.
 
           **Android** (10 or newer): download \`synaxis_${GITHUB_REF_NAME#v}_android.apk\` on your phone and open it
           (allow installing from your browser if asked). Videos play in VLC for Android."

@@ -12,6 +12,8 @@
 // GNU General Public License for more details.
 
 #include <gtest/gtest.h>
+
+#include "fixtures.hpp"
 #include <nlohmann/json.hpp>
 
 #include <cctype>
@@ -45,7 +47,7 @@ std::optional<int> ToOptionalInt(const json& j) {
 }
 
 std::vector<Case> LoadCases() {
-    std::ifstream in(std::string(FIXTURES_DIR) + "/expected_metadata.json");
+    std::ifstream in(FixturesDir() / "expected_metadata.json");
     json manifest;
     in >> manifest;
 

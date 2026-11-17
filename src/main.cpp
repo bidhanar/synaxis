@@ -12,6 +12,7 @@
 // GNU General Public License for more details.
 
 #include "synaxis/media_library.hpp"
+#include "synaxis/platform.hpp"
 #include "synaxis/player.hpp"
 
 #include <algorithm>
@@ -49,7 +50,7 @@ void PrintVersion() {
 }
 
 void PrintParsed(const fs::path& path, const synaxis::ParsedFilename& parsed) {
-    std::cout << path.string() << "\n";
+    std::cout << synaxis::PathToUtf8(path) << "\n";
     std::cout << "  title:   " << (parsed.title ? *parsed.title : "-") << "\n";
     std::cout << "  year:    " << (parsed.year ? std::to_string(*parsed.year) : "-") << "\n";
     std::cout << "  season:  " << (parsed.season ? std::to_string(*parsed.season) : "-") << "\n";
@@ -176,7 +177,7 @@ void PrintCandidate(size_t index, const synaxis::MediaEntry& entry) {
     }
     if (m.year) std::cout << " (" << *m.year << ")";
     if (m.source) std::cout << " [" << *m.source << "]";
-    std::cout << "\n      " << entry.path.string() << "\n";
+    std::cout << "\n      " << synaxis::PathToUtf8(entry.path) << "\n";
 }
 
 // Prompts the user to pick one of several ambiguous candidates.
@@ -300,13 +301,13 @@ int RunPlay(const Args& args) {
     }
 
     if (!fs::exists(chosen.path)) {
-        std::cerr << "error: file no longer exists on disk: " << chosen.path.string()
+        std::cerr << "error: file no longer exists on disk: " << synaxis::PathToUtf8(chosen.path)
                    << ". Re-run '-d <directory>' to refresh " << kLibraryPath << ".\n";
         return 1;
     }
 
     if (!synaxis::Player::Play(chosen.path)) {
-        std::cerr << "error: playback failed for " << chosen.path.string() << "\n";
+        std::cerr << "error: playback failed for " << synaxis::PathToUtf8(chosen.path) << "\n";
         return 1;
     }
     return 0;

@@ -12,6 +12,7 @@
 // GNU General Public License for more details.
 
 #include "synaxis/config.hpp"
+#include "synaxis/platform.hpp"
 
 #include <cstdlib>
 #include <fstream>
@@ -21,35 +22,37 @@ namespace synaxis {
 namespace fs = std::filesystem;
 using nlohmann::json;
 
-namespace {
-
-fs::path Home() {
-    const char* home = std::getenv("HOME");
-    return home && *home ? fs::path(home) : fs::current_path();
-}
-
-fs::path XdgDir(const char* var, const char* fallback) {
-    const char* dir = std::getenv(var);
-    return dir && *dir ? fs::path(dir) : Home() / fallback;
-}
-
-} // namespace
-
 AppPaths DefaultAppPaths() {
-    return {XdgDir("XDG_CONFIG_HOME", ".config") / "synaxis" / "config.json",
-            XdgDir("XDG_DATA_HOME", ".local/share") / "synaxis"};
+#ifdef _WIN32
+    // Settings roam with the user's account; the library cache and
+    // thumbnails are rebuilt per machine.
+    auto known = [](const char* var, const char* fallback) {
+        auto dir = GetEnv(var);
+        return dir ? PathFromUtf8(*dir) : HomeDir() / fallback;
+    };
+    return {known("APPDATA", "AppData/Roaming") / "Synaxis" / "config.json",
+            known("LOCALAPPDATA", "AppData/Local") / "Synaxis"};
+#else
+    // The XDG base directory spec.
+    auto xdg = [](const char* var, const char* fallback) {
+        auto dir = GetEnv(var);
+        return dir ? PathFromUtf8(*dir) : HomeDir() / fallback;
+    };
+    return {xdg("XDG_CONFIG_HOME", ".config") / "synaxis" / "config.json",
+            xdg("XDG_DATA_HOME", ".local/share") / "synaxis"};
+#endif
 }
 
 ScanOptions AppConfig::scan_options() const {
     ScanOptions options;
-    for (const std::string& root : roots) options.roots.emplace_back(root);
+    for (const std::string& root : roots) options.roots.push_back(PathFromUtf8(root));
     options.min_size = std::uintmax_t(std::max(0.0, min_size_mb) * 1024 * 1024);
     return options;
 }
 
 AppConfig DefaultConfig() {
     AppConfig config;
-    config.roots = {Home().string()};
+    config.roots = {PathToUtf8(HomeDir())};
     return config;
 }
 

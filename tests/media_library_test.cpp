@@ -13,6 +13,8 @@
 
 #include <gtest/gtest.h>
 
+#include "fixtures.hpp"
+
 #include <algorithm>
 #include <filesystem>
 
@@ -26,7 +28,7 @@ using synaxis::MediaEntry;
 using synaxis::MediaLibrary;
 
 fs::path FixturesRoot() {
-    return fs::path(FIXTURES_DIR) / "media_library";
+    return FixturesDir() / "media_library";
 }
 
 TEST(MediaLibraryTest, ScanResolvesCanonicalPathsAndParsesMetadata) {

@@ -12,6 +12,7 @@
 // GNU General Public License for more details.
 
 #include "synaxis/media_probe.hpp"
+#include "synaxis/platform.hpp"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -59,7 +60,8 @@ FormatPtr OpenInput(const std::filesystem::path& path) {
     std::call_once(quiet, [] { av_log_set_level(AV_LOG_QUIET); });
 
     AVFormatContext* raw = nullptr;
-    if (avformat_open_input(&raw, path.c_str(), nullptr, nullptr) < 0) return nullptr;
+    // FFmpeg takes UTF-8 file names on every platform.
+    if (avformat_open_input(&raw, PathToUtf8(path).c_str(), nullptr, nullptr) < 0) return nullptr;
     FormatPtr fmt(raw);
     if (avformat_find_stream_info(fmt.get(), nullptr) < 0) return nullptr;
     return fmt;

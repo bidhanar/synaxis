@@ -23,7 +23,8 @@
 
 namespace synaxis {
 
-// Where the app keeps its files, following the XDG base directory spec.
+// Where the app keeps its files: the XDG base directories on Linux,
+// %APPDATA% and %LOCALAPPDATA% on Windows.
 struct AppPaths {
     std::filesystem::path config_file;  // $XDG_CONFIG_HOME/synaxis/config.json
     std::filesystem::path data_dir;     // $XDG_DATA_HOME/synaxis
@@ -32,7 +33,7 @@ struct AppPaths {
 AppPaths DefaultAppPaths();
 
 struct AppConfig {
-    std::vector<std::string> roots;  // folders to scan
+    std::vector<std::string> roots;  // folders to scan (UTF-8)
     double min_size_mb = 200;        // skip smaller files (samples, clips)
     int port = 8484;
     bool fullscreen = true;          // open VLC fullscreen

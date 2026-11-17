@@ -13,18 +13,26 @@
 
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <string>
 
+#ifndef _WIN32
 typedef struct _GtkApplication GtkApplication;
 typedef struct _GtkWidget GtkWidget;
+#endif
 
 namespace synaxis {
 
-// The desktop window: the web UI in a WebKitGTK view, as a single-instance
-// GTK application (launching Synaxis again raises the existing window).
+// The desktop window, single-instance (launching Synaxis again raises the
+// existing window): the web UI in a WebKitGTK view on Linux
+// (app_window.cpp), in Edge WebView2 on Windows (app_window_win.cpp).
 class AppWindow {
 public:
+    // Run()'s result when no window can be shown (WebView2 isn't installed):
+    // the caller falls back to the web browser.
+    static constexpr int kUnavailable = 125;
+
     // Registers with the session bus to find out whether another Synaxis
     // window already exists.
     explicit AppWindow(std::filesystem::path state_file);
@@ -44,17 +52,24 @@ public:
     void Quit();
 
 private:
+#ifdef _WIN32
+    void* mutex_ = nullptr;  // HANDLE; held while this process owns the window
+    std::atomic<void*> view_ = nullptr;  // webview_t, while Run() shows it
+    std::atomic<bool> quit_ = false;     // Quit() came before the window
+    bool remote_ = false;
+#else
     static void OnActivate(GtkApplication* app, void* self);
     void BuildWindow();
     void SaveGeometry();
 
-    std::filesystem::path state_file_;  // remembered window size
-    std::string url_;
     GtkApplication* app_ = nullptr;
     GtkWidget* window_ = nullptr;
     GtkWidget* view_ = nullptr;
     bool fullscreen_ = false;
     bool maximized_ = false;
+#endif
+    std::filesystem::path state_file_;  // remembered window size
+    std::string url_;
 };
 
 } // namespace synaxis

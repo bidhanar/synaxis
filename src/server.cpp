@@ -15,6 +15,7 @@
 
 #include "synaxis/feed.hpp"
 #include "synaxis/fingerprint.hpp"
+#include "synaxis/platform.hpp"
 #include "web_assets.hpp"
 
 #include <algorithm>
@@ -116,7 +117,7 @@ json OptionalString(const std::optional<std::string>& s) {
 }
 
 const char* MimeFor(const fs::path& path) {
-    std::string ext = path.extension().string();
+    std::string ext = PathToUtf8(path.extension());
     if (ext == ".html") return "text/html; charset=utf-8";
     if (ext == ".css") return "text/css; charset=utf-8";
     if (ext == ".js") return "text/javascript; charset=utf-8";
@@ -128,8 +129,8 @@ const char* MimeFor(const fs::path& path) {
 // iterate on the UI without rebuilding; otherwise the compiled-in copy is used.
 bool ServeAsset(const std::string& path, Response& res) {
     res.set_header("Cache-Control", "no-cache");
-    if (const char* dir = std::getenv("SYNAXIS_WEB_DIR"); dir && *dir) {
-        std::ifstream in(fs::path(dir) / path.substr(1), std::ios::binary);
+    if (auto dir = GetEnv("SYNAXIS_WEB_DIR")) {
+        std::ifstream in(PathFromUtf8(*dir) / path.substr(1), std::ios::binary);
         if (!in) return false;
         std::stringstream buf;
         buf << in.rdbuf();
@@ -227,7 +228,7 @@ struct View {
             if (!f) continue;
             versions.push_back({
                 {"file_id", f->id},
-                {"path", f->path.string()},
+                {"path", PathToUtf8(f->path)},
                 {"size", f->size},
                 {"quality", Quality(f)},
                 {"width", f->info ? f->info->width : 0},
@@ -411,13 +412,6 @@ std::string PlaylistTitle(const Catalog& catalog, const Title& t, size_t index) 
     const VideoFile* f = catalog.FindFile(item.file_ids.front());
     if (f && f->metadata.episode_title) title += " · " + *f->metadata.episode_title;
     return title;
-}
-
-// Expands a leading "~" so settings can be typed the way people think of paths.
-std::string ExpandHome(std::string path) {
-    const char* home = std::getenv("HOME");
-    if (home && (path == "~" || path.rfind("~/", 0) == 0)) path = home + path.substr(1);
-    return path;
 }
 
 } // namespace
@@ -681,7 +675,7 @@ void Server::RegisterRoutes() {
             for (size_t i = 0; i < t->items.size(); ++i) items.push_back(view.Item(*t, i));
             detail["items"] = items;
             const VideoFile* f = view.catalog.FindFile(t->items.front().file_ids.front());
-            detail["folder"] = f ? f->path.parent_path().string() : "";
+            detail["folder"] = f ? PathToUtf8(f->path.parent_path()) : "";
             SendJson(res, detail);
         });
     });
@@ -774,7 +768,7 @@ void Server::RegisterRoutes() {
 
     auto describe = [](const VideoFile& f) {
         return json{{"file_id", f.id},
-                    {"name", f.path.filename().string()},
+                    {"name", PathToUtf8(f.path.filename())},
                     {"size", f.size},
                     {"duration", f.info ? f.info->duration : 0.0}};
     };
@@ -821,7 +815,7 @@ void Server::RegisterRoutes() {
             return SendError(res, 410, "That file isn't on disk anymore. Try rescanning in Settings.");
         }
         std::string title = StringField(*body, "title");
-        if (title.empty()) title = file->path.filename().string();
+        if (title.empty()) title = PathToUtf8(file->path.filename());
         double position = std::max(0.0, body->value("position", 0.0));
 
         AppConfig config = this->config();
@@ -876,11 +870,10 @@ void Server::RegisterRoutes() {
 
         std::vector<std::string> roots;
         for (std::string root : after.roots) {
-            root = ExpandHome(root);
-            while (root.size() > 1 && root.back() == '/') root.pop_back();
+            root = TrimTrailingSeparators(ExpandHome(root));
             std::error_code ec;
             if (root.empty()) continue;
-            if (!fs::is_directory(root, ec)) return SendError(res, 400, "Not a folder: " + root);
+            if (!fs::is_directory(PathFromUtf8(root), ec)) return SendError(res, 400, "Not a folder: " + root);
             if (std::find(roots.begin(), roots.end(), root) == roots.end()) roots.push_back(root);
         }
         after.roots = roots;

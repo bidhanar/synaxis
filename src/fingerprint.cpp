@@ -12,6 +12,7 @@
 // GNU General Public License for more details.
 
 #include "synaxis/fingerprint.hpp"
+#include "synaxis/platform.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -83,7 +84,7 @@ std::optional<std::string> HashEnds(const std::filesystem::path& path, std::uint
 }
 
 std::optional<std::string> Fingerprints::HashOf(const VideoFile& file) {
-    std::string key = file.path.string() + "|" + std::to_string(file.size) + "|" +
+    std::string key = PathToUtf8(file.path) + "|" + std::to_string(file.size) + "|" +
                       std::to_string(file.mtime);
     {
         std::lock_guard lock(mu_);

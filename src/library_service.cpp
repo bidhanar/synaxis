@@ -12,6 +12,7 @@
 // GNU General Public License for more details.
 
 #include "synaxis/library_service.hpp"
+#include "synaxis/platform.hpp"
 
 #include "synaxis/media_probe.hpp"
 
@@ -207,7 +208,7 @@ void LibraryService::RenderThumbnails() {
     for (const VideoFile& f : catalog->files()) live.insert(f.id + ".jpg");
     std::error_code ec;
     for (const auto& entry : fs::directory_iterator(thumbs_dir_, ec)) {
-        if (!live.count(entry.path().filename().string())) fs::remove(entry.path(), ec);
+        if (!live.count(PathToUtf8(entry.path().filename()))) fs::remove(entry.path(), ec);
     }
 }
 

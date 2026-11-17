@@ -13,17 +13,9 @@
 
 #include "synaxis/vlc_player.hpp"
 
-#include "synaxis/process.hpp"
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <signal.h>
-#include <sys/socket.h>
-#include <sys/wait.h>
-#include <unistd.h>
+#include "synaxis/platform.hpp"
 
 #include <cctype>
-#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <random>
@@ -37,25 +29,6 @@ namespace synaxis {
 namespace {
 
 using nlohmann::json;
-
-// Asks the kernel for an unused localhost port. There's a small window
-// before VLC binds it, which is fine for a desktop app.
-int FreeLocalPort() {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return 0;
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = 0;
-    socklen_t len = sizeof addr;
-    int port = 0;
-    if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) == 0 &&
-        getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0) {
-        port = ntohs(addr.sin_port);
-    }
-    close(fd);
-    return port;
-}
 
 std::string RandomPassword() {
     std::random_device rd;
@@ -109,6 +82,20 @@ std::optional<VlcStatus> ParseVlcStatus(const std::string& body) {
     return status;
 }
 
+std::string FindVlc(const std::string& configured) {
+#ifdef _WIN32
+    if (configured != "vlc") return configured;
+    for (const char* variable : {"ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"}) {
+        auto root = GetEnv(variable);
+        if (!root) continue;
+        std::filesystem::path exe = PathFromUtf8(*root) / "VideoLAN" / "VLC" / "vlc.exe";
+        std::error_code ec;
+        if (std::filesystem::exists(exe, ec)) return PathToUtf8(exe);
+    }
+#endif
+    return configured;
+}
+
 std::vector<std::string> VlcCommandLine(const VlcOptions& options,
                                         const std::vector<PlaylistItem>& playlist, int port,
                                         const std::string& password) {
@@ -134,7 +121,7 @@ std::vector<std::string> VlcCommandLine(const VlcOptions& options,
 
     for (size_t i = 0; i < playlist.size(); ++i) {
         const PlaylistItem& item = playlist[i];
-        argv.push_back(item.path.string());
+        argv.push_back(PathToUtf8(item.path));
         // ":option" after a file applies to that playlist item only.
         if (i == 0 && item.start > 0) {
             char buf[32];
@@ -162,23 +149,20 @@ std::unique_ptr<VlcSession> VlcSession::Launch(const VlcOptions& options,
     session->password_ = RandomPassword();
     session->playlist_ = std::move(playlist);
 
-    session->pid_ = SpawnProcess(
-        VlcCommandLine(options, session->playlist_, session->port_, session->password_),
-        /*detach=*/true, error);
-    if (session->pid_ < 0) return nullptr;
+    VlcOptions resolved = options;
+    resolved.executable = FindVlc(options.executable);
+    session->process_ = Process::Spawn(
+        VlcCommandLine(resolved, session->playlist_, session->port_, session->password_),
+        /*detached=*/true, error);
+    if (!session->process_) {
+        if (error) *error = "Couldn't start VLC (" + *error + "). Is it installed? Check the VLC program in Settings.";
+        return nullptr;
+    }
     return session;
 }
 
-VlcSession::~VlcSession() {
-    Running();  // reap if it already exited, so it doesn't linger as a zombie
-}
-
 bool VlcSession::Running() {
-    if (exited_ || pid_ < 0) return false;
-    int status = 0;
-    pid_t r = waitpid(pid_, &status, WNOHANG);
-    if (r == pid_ || (r < 0 && errno == ECHILD)) exited_ = true;
-    return !exited_;
+    return process_->Running();
 }
 
 std::optional<VlcStatus> VlcSession::Poll() const {
@@ -187,7 +171,7 @@ std::optional<VlcStatus> VlcSession::Poll() const {
 
 std::optional<VlcStatus> VlcSession::Command(const std::string& command,
                                              const std::string& value) const {
-    if (exited_) return std::nullopt;
+    if (!process_->Running()) return std::nullopt;
     httplib::Client client("127.0.0.1", port_);
     client.set_connection_timeout(0, 500'000);
     client.set_read_timeout(1, 0);
@@ -205,17 +189,13 @@ std::optional<VlcStatus> VlcSession::Command(const std::string& command,
 const PlaylistItem* VlcSession::Current(const VlcStatus& status) const {
     if (status.filename.empty()) return playlist_.size() == 1 ? &playlist_.front() : nullptr;
     for (const PlaylistItem& item : playlist_) {
-        if (item.path.filename().string() == status.filename) return &item;
+        if (PathToUtf8(item.path.filename()) == status.filename) return &item;
     }
     return nullptr;
 }
 
 void VlcSession::Terminate() {
-    if (!Running()) return;
-    kill(pid_, SIGTERM);
-    for (int i = 0; i < 20 && Running(); ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
+    process_->Terminate();
 }
 
 } // namespace synaxis

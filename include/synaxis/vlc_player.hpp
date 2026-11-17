@@ -13,9 +13,8 @@
 
 #pragma once
 
-#include <sys/types.h>
+#include "synaxis/process.hpp"
 
-#include <atomic>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -51,6 +50,10 @@ struct VlcOptions {
 
 // The command line that plays `playlist` in a fresh VLC window, with its
 // HTTP control interface on localhost:`port` so playback can be followed.
+// The VLC program to run: the configured one, or on Windows, where VLC's
+// installer puts it (it isn't on the PATH there).
+std::string FindVlc(const std::string& configured);
+
 std::vector<std::string> VlcCommandLine(const VlcOptions& options,
                                         const std::vector<PlaylistItem>& playlist, int port,
                                         const std::string& password);
@@ -61,7 +64,6 @@ public:
     static std::unique_ptr<VlcSession> Launch(const VlcOptions& options,
                                               std::vector<PlaylistItem> playlist,
                                               std::string* error);
-    ~VlcSession();
 
     // False once VLC has exited (and been reaped).
     bool Running();
@@ -80,8 +82,7 @@ public:
 private:
     VlcSession() = default;
 
-    pid_t pid_ = -1;
-    std::atomic<bool> exited_ = false;  // Running() is called from two threads
+    std::unique_ptr<Process> process_;
     int port_ = 0;
     std::string password_;
     std::vector<PlaylistItem> playlist_;

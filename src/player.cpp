@@ -13,29 +13,24 @@
 
 #include "synaxis/player.hpp"
 
+#include "synaxis/platform.hpp"
 #include "synaxis/process.hpp"
+#include "synaxis/vlc_player.hpp"
 
-#include <sys/wait.h>
-
-#include <cerrno>
 #include <iostream>
 
 namespace synaxis {
 
 bool Player::Play(const std::filesystem::path& path) {
     std::string error;
-    pid_t pid = SpawnProcess({"vlc", "--no-one-instance", "--play-and-exit", path.string()},
-                             /*detach=*/false, &error);
-    if (pid < 0) {
+    auto process = Process::Spawn(
+        {FindVlc("vlc"), "--no-one-instance", "--play-and-exit", PathToUtf8(path)},
+        /*detached=*/false, &error);
+    if (!process) {
         std::cerr << "error: " << error << "\n";
         return false;
     }
-
-    int status = 0;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno != EINTR) return false;
-    }
-    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    return process->Wait() == 0;
 }
 
 } // namespace synaxis

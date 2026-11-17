@@ -18,14 +18,23 @@
 #ifdef SYNAXIS_HAS_WINDOW
 #include "app_window.hpp"
 #endif
+#include "synaxis/platform.hpp"
 #include "synaxis/process.hpp"
 
+#ifdef _WIN32
+#include <windows.h>
+#include <shellapi.h>
+#else
 #include <pthread.h>
 #include <signal.h>
-#include <sys/wait.h>
+#endif
 
+#include <atomic>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
+#include <functional>
+#include <memory>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -59,7 +68,7 @@ void PrintUsage(const char* argv0) {
               << "  Opens your video library in its own window. --browser shows it in the\n"
               << "  web browser instead, --no-browser only serves http://127.0.0.1:<port>/\n"
               << "  (default 8484). --quit stops a running instance.\n"
-              << "  Settings live in " << synaxis::DefaultAppPaths().config_file.string()
+              << "  Settings live in " << synaxis::PathToUtf8(synaxis::DefaultAppPaths().config_file)
               << ".\n";
 }
 
@@ -73,6 +82,7 @@ bool QuitRunning(int port) {
     return res && res->status == 200;
 }
 
+#ifndef _WIN32
 // Snap apps (VS Code's terminal, for one) leak their private GTK/GLib paths
 // to everything started from them. GTK then loads that snap's older
 // settings schemas and modules, and aborts on the mismatch. Unless we're a
@@ -100,10 +110,11 @@ void DropLeakedSnapEnvironment() {
         if (value && in_snap(value)) unsetenv(name);
     }
 }
+#endif
 
 std::string DefaultProfileName() {
-    const char* user = std::getenv("USER");
-    std::string name = user && *user ? user : "Me";
+    std::string name = synaxis::UserName();
+    if (name.empty()) name = "Me";
     name[0] = char(std::toupper(static_cast<unsigned char>(name[0])));
     return name;
 }
@@ -117,19 +128,70 @@ bool AlreadyRunning(int port) {
 }
 
 void OpenBrowser(const std::string& url) {
+#ifdef _WIN32
+    std::wstring wide = synaxis::PathFromUtf8(url).wstring();
+    auto result = reinterpret_cast<INT_PTR>(
+        ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+    if (result <= 32) std::cerr << "Couldn't open a browser. Visit " << url << "\n";
+#else
     std::string error;
-    pid_t pid = synaxis::SpawnProcess({"xdg-open", url}, /*detach=*/true, &error);
-    if (pid < 0) {
+    std::shared_ptr<synaxis::Process> opener =
+        synaxis::Process::Spawn({"xdg-open", url}, /*detached=*/true, &error);
+    if (!opener) {
         std::cerr << "Couldn't open a browser (" << error << "). Visit " << url << "\n";
         return;
     }
-    std::thread([pid] { waitpid(pid, nullptr, 0); }).detach();
+    std::thread([opener] { opener->Wait(); }).detach();  // reap it
+#endif
+}
+
+#ifdef _WIN32
+// Synaxis.exe is a windowed program, so it has no console of its own.
+// Started from a terminal, it prints there instead.
+void UseParentConsole() {
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
+    std::freopen("CONOUT$", "w", stdout);
+    std::freopen("CONOUT$", "w", stderr);
+    SetConsoleOutputCP(CP_UTF8);
+}
+
+std::function<void()> g_on_console_close;
+
+BOOL WINAPI OnConsoleControl(DWORD) {
+    if (g_on_console_close) g_on_console_close();
+    return TRUE;
+}
+#endif
+
+// Calls `stop` once on Ctrl+C (or SIGTERM, or the console closing).
+// Must be called before any other thread starts.
+void StopOnInterrupt(std::function<void()> stop) {
+#ifdef _WIN32
+    g_on_console_close = std::move(stop);
+    SetConsoleCtrlHandler(OnConsoleControl, TRUE);
+#else
+    // Block the signals in every thread, so only the waiter below gets them.
+    sigset_t signals;
+    sigemptyset(&signals);
+    sigaddset(&signals, SIGINT);
+    sigaddset(&signals, SIGTERM);
+    pthread_sigmask(SIG_BLOCK, &signals, nullptr);
+    std::thread([signals, stop = std::move(stop)] {
+        int sig = 0;
+        sigwait(&signals, &sig);
+        stop();
+    }).detach();
+#endif
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    UseParentConsole();
+#else
     DropLeakedSnapEnvironment();
+#endif
 
     int port = -1;
     Mode mode = kHasWindow ? Mode::kWindow : Mode::kBrowser;
@@ -194,13 +256,11 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    // Block SIGINT/SIGTERM before any thread starts, so only the waiter
-    // below receives them and can shut the server down cleanly.
-    sigset_t signals;
-    sigemptyset(&signals);
-    sigaddset(&signals, SIGINT);
-    sigaddset(&signals, SIGTERM);
-    pthread_sigmask(SIG_BLOCK, &signals, nullptr);
+    // Before any thread starts, so Ctrl+C shuts the server down cleanly.
+    std::atomic<synaxis::Server*> running = nullptr;
+    StopOnInterrupt([&running] {
+        if (synaxis::Server* server = running.load()) server->Stop();
+    });
 
     synaxis::WatchState state(paths.data_dir / "watch_state.json");
     if (state.profiles().empty()) state.AddProfile(DefaultProfileName(), 0);
@@ -214,12 +274,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     library.Rescan(config.scan_options());
-
-    std::thread([&server, signals] {
-        int sig = 0;
-        sigwait(&signals, &sig);
-        server.Stop();
-    }).detach();
+    running = &server;
 
     std::cout << "Synaxis " << SYNAXIS_VERSION << " is running at " << url << "\n";
 
@@ -234,6 +289,14 @@ int main(int argc, char** argv) {
         });
         server.WaitUntilReady();
         int status = window->Run(url);
+        if (status == synaxis::AppWindow::kUnavailable) {
+            // No way to show our own window here: use the browser, and keep
+            // serving until Quit in the UI (or Ctrl+C).
+            std::cerr << "Can't show the Synaxis window; opening it in the browser instead.\n";
+            OpenBrowser(url);
+            serving.join();
+            return 0;
+        }
         server.Stop();
         serving.join();
         return status;
