@@ -32,3 +32,12 @@ synaxis_test(feed_test)
 synaxis_test(watch_state_test)
 synaxis_test(vlc_player_test)
 synaxis_test(media_probe_test)
+synaxis_test(fingerprint_test)
+
+# The sync logic in web/ is plain JavaScript shared with Tandem; its tests
+# run on Node's built-in test runner when Node is installed.
+find_program(NODE_EXECUTABLE node)
+if(NODE_EXECUTABLE)
+    add_test(NAME web_sync_core_test
+        COMMAND ${NODE_EXECUTABLE} --test ${CMAKE_CURRENT_SOURCE_DIR}/web/sync-core.test.mjs)
+endif()

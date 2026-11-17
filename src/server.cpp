@@ -14,6 +14,7 @@
 #include "server.hpp"
 
 #include "synaxis/feed.hpp"
+#include "synaxis/fingerprint.hpp"
 #include "web_assets.hpp"
 
 #include <algorithm>
@@ -448,6 +449,52 @@ void Server::WaitUntilReady() {
     http_.wait_until_ready();
 }
 
+std::optional<Server::Pick> Server::PickToPlay(const Catalog& catalog, const json& body,
+                                              Response& res) {
+    auto profile = state_.profile(StringField(body, "profile"));
+    if (!profile) {
+        SendError(res, 404, "no such profile");
+        return std::nullopt;
+    }
+    const Title* title = catalog.FindTitle(StringField(body, "title"));
+    if (!title) {
+        SendError(res, 404, "no such title");
+        return std::nullopt;
+    }
+
+    Pick pick;
+    pick.profile = profile;
+    pick.title = title;
+    std::string file_id = StringField(body, "file");
+    if (!file_id.empty()) {
+        auto loc = catalog.Locate(file_id);
+        if (!loc || loc->first != title) {
+            SendError(res, 404, "no such file");
+            return std::nullopt;
+        }
+        pick.index = loc->second;
+        auto it = profile->progress.find(file_id);
+        if (it != profile->progress.end() && !it->second.completed &&
+            it->second.position >= kMinResumeSeconds) {
+            pick.start = it->second.position;
+        }
+    } else {
+        UpNext up = ComputeUpNext(catalog, *profile, *title);
+        pick.index = up.item;
+        file_id = up.file_id;
+        pick.start = up.position;
+    }
+    if (body.value("from_start", false)) pick.start = 0;
+
+    pick.file = catalog.FindFile(file_id);
+    std::error_code ec;
+    if (!pick.file || !fs::exists(pick.file->path, ec)) {
+        SendError(res, 410, "That file isn't on disk anymore. Try rescanning in Settings.");
+        return std::nullopt;
+    }
+    return pick;
+}
+
 AppConfig Server::config() const {
     std::lock_guard lock(config_mu_);
     return config_;
@@ -478,7 +525,8 @@ void Server::RegisterRoutes() {
     // ---- Web UI ----
 
     http_.Get("/", [](const Request&, Response& res) { ServeAsset("/index.html", res); });
-    http_.Get(R"(/(app\.js|app\.css|icon\.svg))", [](const Request& req, Response& res) {
+    http_.Get(R"(/(app\.js|app\.css|icon\.svg|together\.js|sync-core\.js|sync-config\.js|socket\.io\.esm\.min\.js))",
+              [](const Request& req, Response& res) {
         if (!ServeAsset(req.path, res)) res.status = 404;
     });
 
@@ -643,37 +691,16 @@ void Server::RegisterRoutes() {
     http_.Post("/api/play", [this](const Request& req, Response& res) {
         auto body = ParseBody(req);
         if (!body) return SendError(res, 400, "bad request");
-        auto profile = state_.profile(StringField(*body, "profile"));
-        if (!profile) return SendError(res, 404, "no such profile");
         std::shared_ptr<const Catalog> catalog = library_.catalog();
-        const Title* title = catalog->FindTitle(StringField(*body, "title"));
-        if (!title) return SendError(res, 404, "no such title");
-
-        size_t index = 0;
-        std::string file_id = StringField(*body, "file");
-        double start = 0;
-        if (!file_id.empty()) {
-            auto loc = catalog->Locate(file_id);
-            if (!loc || loc->first != title) return SendError(res, 404, "no such file");
-            index = loc->second;
-            auto it = profile->progress.find(file_id);
-            if (it != profile->progress.end() && !it->second.completed &&
-                it->second.position >= kMinResumeSeconds) {
-                start = it->second.position;
-            }
-        } else {
-            UpNext up = ComputeUpNext(*catalog, *profile, *title);
-            index = up.item;
-            file_id = up.file_id;
-            start = up.position;
-        }
-        if (body->value("from_start", false)) start = 0;
-
-        const VideoFile* file = catalog->FindFile(file_id);
+        auto pick = PickToPlay(*catalog, *body, res);
+        if (!pick) return;
+        const Profile& profile = *pick->profile;
+        const Title* title = pick->title;
+        size_t index = pick->index;
+        std::string file_id = pick->file->id;
+        double start = pick->start;
+        const VideoFile* file = pick->file;
         std::error_code ec;
-        if (!file || !fs::exists(file->path, ec)) {
-            return SendError(res, 410, "That file isn't on disk anymore. Try rescanning in Settings.");
-        }
 
         std::vector<PlaylistItem> playlist;
         playlist.push_back({file_id, file->path, PlaylistTitle(*catalog, *title, index), start});
@@ -687,7 +714,7 @@ void Server::RegisterRoutes() {
 
         AppConfig config = this->config();
         std::string error;
-        if (!playback_.Play(profile->id, std::move(playlist), {config.vlc, config.fullscreen},
+        if (!playback_.Play(profile.id, std::move(playlist), {config.vlc, config.fullscreen},
                             &error)) {
             return SendError(res, 500, error);
         }
@@ -738,6 +765,102 @@ void Server::RegisterRoutes() {
         SendJson(res, {{"ok", true}});
     });
 
+    // ---- Watch Together ----
+    //
+    // The page holds the connection to the sync server and runs the sync
+    // logic (web/sync-core.js). These routes are its hands on this computer:
+    // naming files the way the room does, finding the room's file here, and
+    // driving the VLC window opened for the room.
+
+    auto describe = [](const VideoFile& f) {
+        return json{{"file_id", f.id},
+                    {"name", f.path.filename().string()},
+                    {"size", f.size},
+                    {"duration", f.info ? f.info->duration : 0.0}};
+    };
+
+    // What to put in the room for a title (the same pick as Play), with its
+    // fingerprint. Reads up to 8 MB of the file the first time.
+    http_.Post("/api/together/media", [this](const Request& req, Response& res) {
+        auto body = ParseBody(req);
+        if (!body) return SendError(res, 400, "bad request");
+        std::shared_ptr<const Catalog> catalog = library_.catalog();
+        auto pick = PickToPlay(*catalog, *body, res);
+        if (!pick) return;
+        auto media_id = fingerprints_.MediaIdOf(*pick->file);
+        if (!media_id) return SendError(res, 500, "Couldn't read that file.");
+        SendJson(res, {{"media_id", *media_id},
+                       {"title", PlaylistTitle(*catalog, *pick->title, pick->index)},
+                       {"start", pick->start}});
+    });
+
+    // Looks in this library for the room's file.
+    http_.Post("/api/together/find", [this, describe](const Request& req, Response& res) {
+        auto body = ParseBody(req);
+        auto wanted = body ? ParseMediaId(StringField(*body, "media_id")) : std::nullopt;
+        if (!wanted) return SendError(res, 400, "not a local file's id");
+        std::shared_ptr<const Catalog> catalog = library_.catalog();
+        Fingerprints::Match match = fingerprints_.Find(*catalog, *wanted);
+        json alternatives = json::array();
+        for (const VideoFile* f : match.same_length) alternatives.push_back(describe(*f));
+        SendJson(res, {{"exact", match.exact ? describe(*match.exact) : json(nullptr)},
+                       {"alternatives", alternatives},
+                       {"expected", {{"size", wanted->size}, {"duration", wanted->duration}}}});
+    });
+
+    // Opens a file in VLC for the room, at `position` seconds.
+    http_.Post("/api/together/open", [this](const Request& req, Response& res) {
+        auto body = ParseBody(req);
+        if (!body) return SendError(res, 400, "bad request");
+        auto profile = state_.profile(StringField(*body, "profile"));
+        if (!profile) return SendError(res, 404, "no such profile");
+        std::shared_ptr<const Catalog> catalog = library_.catalog();
+        const VideoFile* file = catalog->FindFile(StringField(*body, "file"));
+        std::error_code ec;
+        if (!file || !fs::exists(file->path, ec)) {
+            return SendError(res, 410, "That file isn't on disk anymore. Try rescanning in Settings.");
+        }
+        std::string title = StringField(*body, "title");
+        if (title.empty()) title = file->path.filename().string();
+        double position = std::max(0.0, body->value("position", 0.0));
+
+        AppConfig config = this->config();
+        std::string error;
+        if (!playback_.Play(profile->id, {{file->id, file->path, title, position}},
+                            {config.vlc, config.fullscreen}, &error, /*synced=*/true)) {
+            return SendError(res, 500, error);
+        }
+        SendJson(res, {{"ok", true}});
+    });
+
+    // Polled several times a second by the page while the room plays a file.
+    http_.Get("/api/together/player", [this](const Request&, Response& res) {
+        PlaybackManager::SyncedReading r = playback_.synced_reading();
+        SendJson(res, {{"open", r.open},
+                       {"ready", r.ready},
+                       {"file_id", r.file_id},
+                       {"state", r.state},
+                       {"position", r.position},
+                       {"length", r.length},
+                       {"rate", r.rate},
+                       {"stalled", r.stalled}});
+    });
+
+    http_.Post("/api/together/control", [this](const Request& req, Response& res) {
+        auto body = ParseBody(req);
+        if (!body) return SendError(res, 400, "bad request");
+        std::string command = StringField(*body, "command");
+        double value = body->value("value", 0.0);
+        SendJson(res, {{"ok", playback_.Control(command, value)}});
+    });
+
+    // Closes the room's VLC window (on leaving the room). Leaves any other
+    // VLC window alone.
+    http_.Post("/api/together/close", [this](const Request&, Response& res) {
+        playback_.StopSynced();
+        SendJson(res, {{"ok", true}});
+    });
+
     // ---- Settings ----
 
     http_.Post("/api/settings", [this](const Request& req, Response& res) {
@@ -763,6 +886,13 @@ void Server::RegisterRoutes() {
         after.roots = roots;
         if (after.min_size_mb < 0) after.min_size_mb = 0;
         if (after.vlc.empty()) after.vlc = "vlc";
+        while (!after.sync_server.empty() && after.sync_server.back() == '/') {
+            after.sync_server.pop_back();
+        }
+        if (!after.sync_server.empty() && after.sync_server.rfind("http://", 0) != 0 &&
+            after.sync_server.rfind("https://", 0) != 0) {
+            return SendError(res, 400, "The sync server address starts with https:// (or http://).");
+        }
 
         {
             std::lock_guard lock(config_mu_);

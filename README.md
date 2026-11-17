@@ -55,6 +55,9 @@ phones only install updates signed with the same key.
   watched marks, Start Over, and every copy of a title when you have more than
   one (best quality first).
 - **My List**, **search** (titles and episode names), and a TV Shows/Movies split.
+- **Watch Together** (desktop): watch with up to 8 people in other places, in
+  step. Each person plays their own copy from their own library in VLC; only
+  play, pause and seek go through a sync server, never the video.
 - **Automatic artwork**: frames taken from each video, skipping dark or blank
   frames and cropping letterbox bars.
 - **Settings**: which folders to scan and the minimum file size (default
@@ -63,7 +66,8 @@ phones only install updates signed with the same key.
   and screen recordings left out unless you include them), resumes through
   VLC for Android, and counts down to the next episode when one finishes.
 
-Everything runs locally and nothing goes over the network. Both apps share one
+Everything runs locally, and nothing goes over the network unless you join a
+Watch Together room (then only play/pause/seek messages). Both apps share one
 web UI (`web/`): on Linux it's served on `127.0.0.1` and shown in a WebKitGTK
 window; on Android it's bundled in the APK and talks to the app through an
 in-process bridge, with no network socket at all.
@@ -130,9 +134,28 @@ scans your home folder; change that under **Settings**.
 
 Files:
 
-- `~/.config/synaxis/config.json`: folders, minimum size, port, VLC options
+- `~/.config/synaxis/config.json`: folders, minimum size, port, VLC options,
+  Watch Together's sync server
 - `~/.local/share/synaxis/`: library cache, watch history (`watch_state.json`)
   and thumbnails
+
+### Watch Together
+
+Open **Watch Together** in the top bar and press **Create room**; send the
+6-character code to the others, who type it under **Join a room**. While
+you're in a room, pressing Play on anything in your library starts it for
+everyone, each in their own VLC. Play, pause and seek in any VLC window apply
+to the whole room; anyone who drifts is brought back by playing a few percent
+faster or slower. Everyone needs the same file, recognised by its contents
+(size plus a hash of its first and last 4 MB), whatever it's called. With only
+a different copy of the same length, you're offered to play that instead.
+
+The sync server is Tandem's `server/`, and the
+protocol, `web/sync-core.js` and `web/sync-config.js` are shared with it
+unchanged, so a Synaxis user and a Tandem user can be in the same room. Set
+its address under Settings; everyone in a room needs the same one. Rooms on
+the hosted server hold 8 people (`MAX_MEMBERS`). Not available on Android:
+VLC for Android can't be controlled by another app.
 
 ### Command-line tool
 
@@ -158,6 +181,8 @@ synaxis_cli --version
 | `ComputeUpNext` / `ContinueWatching` | Decides between resume, next episode and rewatch |
 | `VlcSession` / `PlaybackManager` | Launches VLC with its HTTP interface on a random localhost port and password, then polls it to record progress |
 | `Server` + `web/` | JSON API and the single-page UI, compiled into the binary |
+| `web/together.js` | Watch Together: the room, the sync server connection, and the sync logic (`sync-core.js`), driving VLC through `/api/together/*` |
+| `Fingerprints` / `PositionEstimator` | A file's room id (`v1.<hash>.<size>.<seconds>`), and VLC's stepped position smoothed into a current one |
 
 When working on the UI, `SYNAXIS_WEB_DIR=$PWD/web synaxis` serves the files
 from disk, so a browser refresh picks up changes without a rebuild.

@@ -87,6 +87,7 @@ add_library(synaxis_core
     src/config.cpp
     src/feed.cpp
     src/filename_parser.cpp
+    src/fingerprint.cpp
     src/library_service.cpp
     src/media_library.cpp
     src/media_probe.cpp
@@ -106,7 +107,8 @@ target_link_libraries(synaxis_cli PRIVATE synaxis_core)
 target_compile_definitions(synaxis_cli PRIVATE SYNAXIS_VERSION="${PROJECT_VERSION}")
 
 # The web UI is compiled into the binary so the app runs from anywhere.
-set(SYNAXIS_WEB_FILES index.html app.css app.js icon.svg)
+set(SYNAXIS_WEB_FILES index.html app.css app.js icon.svg
+    together.js sync-core.js sync-config.js socket.io.esm.min.js)
 list(TRANSFORM SYNAXIS_WEB_FILES PREPEND ${CMAKE_CURRENT_SOURCE_DIR}/web/ OUTPUT_VARIABLE SYNAXIS_WEB_PATHS)
 string(REPLACE ";" "," SYNAXIS_WEB_LIST "${SYNAXIS_WEB_FILES}")
 set(SYNAXIS_WEB_ASSETS_CPP ${CMAKE_CURRENT_BINARY_DIR}/generated/web_assets_data.cpp)

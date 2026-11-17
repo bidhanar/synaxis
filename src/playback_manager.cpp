@@ -13,7 +13,9 @@
 
 #include "synaxis/playback_manager.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
 
 namespace synaxis {
 
@@ -47,7 +49,7 @@ PlaybackManager::~PlaybackManager() {
 }
 
 bool PlaybackManager::Play(const std::string& profile_id, std::vector<PlaylistItem> playlist,
-                           const VlcOptions& options, std::string* error) {
+                           const VlcOptions& options, std::string* error, bool synced) {
     // Like switching titles on a TV: the previous session closes first.
     Stop();
 
@@ -61,6 +63,7 @@ bool PlaybackManager::Play(const std::string& profile_id, std::vector<PlaylistIt
     if (!session->vlc) return false;
     session->profile_id = profile_id;
     session->started = std::chrono::steady_clock::now();
+    session->synced = synced;
 
     {
         std::lock_guard lock(mu_);
@@ -82,6 +85,66 @@ void PlaybackManager::Stop() {
     state_.Flush();
 }
 
+void PlaybackManager::StopSynced() {
+    {
+        std::lock_guard lock(mu_);
+        if (!session_ || !session_->synced) return;
+    }
+    Stop();
+}
+
+PlaybackManager::SyncedReading PlaybackManager::synced_reading() const {
+    std::lock_guard lock(mu_);
+    SyncedReading r;
+    if (!session_ || !session_->synced) return r;
+    r.open = true;
+    if (!session_->last) return r;
+    const VlcStatus& status = *session_->last;
+    r.ready = true;
+    r.state = status.state;
+    r.length = status.length;
+    r.rate = status.rate;
+    if (const PlaylistItem* item = session_->vlc->Current(status)) r.file_id = item->file_id;
+    auto estimate = session_->estimator.At(std::chrono::steady_clock::now());
+    r.position = estimate.position;
+    r.stalled = estimate.stalled;
+    return r;
+}
+
+bool PlaybackManager::Control(const std::string& command, double value) {
+    std::shared_ptr<Session> session;
+    double length = 0;
+    {
+        std::lock_guard lock(mu_);
+        if (!session_ || !session_->synced) return false;
+        session = session_;
+        if (session->last) length = session->last->length;
+    }
+
+    char buf[32];
+    std::optional<VlcStatus> answer;
+    if (command == "play") {
+        answer = session->vlc->Command("pl_forceresume");
+    } else if (command == "pause") {
+        answer = session->vlc->Command("pl_forcepause");
+    } else if (command == "seek") {
+        // By fraction of the length, which VLC takes to sub-second precision.
+        if (length <= 0) return false;
+        std::snprintf(buf, sizeof buf, "%.5f%%", std::clamp(value / length * 100, 0.0, 100.0));
+        {
+            std::lock_guard lock(mu_);
+            session->estimator.Reset();
+        }
+        answer = session->vlc->Command("seek", buf);
+    } else if (command == "rate") {
+        std::snprintf(buf, sizeof buf, "%.3f", std::clamp(value, 0.25, 4.0));
+        answer = session->vlc->Command("rate", buf);
+    } else {
+        return false;
+    }
+    return answer.has_value();
+}
+
 std::optional<PlaybackManager::NowPlaying> PlaybackManager::now_playing() const {
     std::lock_guard lock(mu_);
     return now_playing_;
@@ -90,7 +153,9 @@ std::optional<PlaybackManager::NowPlaying> PlaybackManager::now_playing() const 
 void PlaybackManager::Monitor() {
     std::unique_lock lock(mu_);
     while (!stopping_) {
-        wake_.wait_for(lock, 1s, [this] { return stopping_; });
+        auto interval = session_ && session_->synced ? std::chrono::milliseconds(kSyncedPoll)
+                                                     : std::chrono::milliseconds(1s);
+        wake_.wait_for(lock, interval, [this] { return stopping_; });
         if (stopping_) break;
         std::shared_ptr<Session> session = session_;
         if (!session) continue;
@@ -103,7 +168,18 @@ void PlaybackManager::Monitor() {
         lock.lock();
 
         if (session_ != session) continue;  // replaced while we were polling
-        if (status) Track(*session, *status);
+        if (status && session->synced) {
+            auto now = std::chrono::steady_clock::now();
+            session->last = status;
+            session->estimator.Update(status->time, status->state == "playing", status->rate, now);
+            // Progress is saved once a second, as for any other session.
+            if (now - session->last_track >= 1s) {
+                session->last_track = now;
+                Track(*session, *status);
+            }
+        } else if (status) {
+            Track(*session, *status);
+        }
         if (!running) {
             session_.reset();
             now_playing_.reset();

@@ -14,11 +14,13 @@
 #pragma once
 
 #include "synaxis/config.hpp"
+#include "synaxis/fingerprint.hpp"
 #include "synaxis/library_service.hpp"
 #include "synaxis/playback_manager.hpp"
 #include "synaxis/watch_state.hpp"
 
 #include <mutex>
+#include <optional>
 #include <string>
 
 #include <httplib.h>
@@ -37,6 +39,19 @@ public:
     void WaitUntilReady();  // until Run() is accepting connections
 
 private:
+    // What Play plays: the file and where to start, for a request's
+    // profile, title and (optional) file and from_start.
+    struct Pick {
+        std::optional<Profile> profile;
+        const Title* title = nullptr;
+        size_t index = 0;  // into title->items
+        const VideoFile* file = nullptr;
+        double start = 0;
+    };
+    // Sends the error response itself and returns nullopt on a bad request.
+    std::optional<Pick> PickToPlay(const Catalog& catalog, const nlohmann::json& body,
+                                   httplib::Response& res);
+
     void RegisterRoutes();
     AppConfig config() const;
 
@@ -44,6 +59,7 @@ private:
     LibraryService& library_;
     WatchState& state_;
     PlaybackManager& playback_;
+    Fingerprints fingerprints_;
 
     mutable std::mutex config_mu_;
     AppConfig config_;

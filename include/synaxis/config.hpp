@@ -37,6 +37,9 @@ struct AppConfig {
     int port = 8484;
     bool fullscreen = true;          // open VLC fullscreen
     std::string vlc = "vlc";         // VLC executable
+    // Watch Together's sync server (Tandem's server/). Only contacted while
+    // you're in a room.
+    std::string sync_server = "https://tandem-sync-a3pn.onrender.com";
 
     ScanOptions scan_options() const;
     bool operator==(const AppConfig&) const = default;

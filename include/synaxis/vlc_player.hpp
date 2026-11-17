@@ -30,6 +30,7 @@ struct VlcStatus {
     std::string filename;  // basename of the current item, if known
     double time = 0;       // seconds into the current item
     double length = 0;     // seconds; 0 if unknown
+    double rate = 1;       // playback speed; 1 is normal
 
     bool operator==(const VlcStatus&) const = default;
 };
@@ -66,6 +67,9 @@ public:
     bool Running();
     // Asks VLC what it's doing; nullopt if it isn't answering (yet).
     std::optional<VlcStatus> Poll() const;
+    // Sends one of VLC's status.json commands (e.g. "pl_forcepause", or
+    // "seek" with value "12.5%") and returns the status that comes back.
+    std::optional<VlcStatus> Command(const std::string& command, const std::string& value = "") const;
     // The playlist entry VLC says is current.
     const PlaylistItem* Current(const VlcStatus& status) const;
     // Asks VLC to quit and waits briefly for it.

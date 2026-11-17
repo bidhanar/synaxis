@@ -37,6 +37,13 @@ TEST(ParseVlcStatusTest, ReadsStateTimeAndFilename) {
     EXPECT_EQ(status->filename, "Show.S01E02.mkv");
     EXPECT_DOUBLE_EQ(status->length, 2580);
     EXPECT_NEAR(status->time, 61.92, 0.01);  // from position, finer than "time"
+    EXPECT_DOUBLE_EQ(status->rate, 1);       // not in the reply: normal speed
+}
+
+TEST(ParseVlcStatusTest, ReadsThePlaybackRate) {
+    auto status = ParseVlcStatus(R"({"state": "playing", "length": 100, "rate": 1.05})");
+    ASSERT_TRUE(status);
+    EXPECT_DOUBLE_EQ(status->rate, 1.05);
 }
 
 TEST(ParseVlcStatusTest, ToleratesMissingDetails) {

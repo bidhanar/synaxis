@@ -22,6 +22,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -63,6 +64,21 @@ std::string RandomPassword() {
     return buf;
 }
 
+// Percent-encodes everything but letters, digits and "-._~".
+std::string UrlEncode(const std::string& s) {
+    std::string out;
+    for (unsigned char c : s) {
+        if (std::isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~') {
+            out += char(c);
+        } else {
+            char buf[4];
+            std::snprintf(buf, sizeof buf, "%%%02X", c);
+            out += buf;
+        }
+    }
+    return out;
+}
+
 } // namespace
 
 std::optional<VlcStatus> ParseVlcStatus(const std::string& body) {
@@ -74,6 +90,7 @@ std::optional<VlcStatus> ParseVlcStatus(const std::string& body) {
         status.state = j.at("state").get<std::string>();
         status.length = j.value("length", 0.0);
         status.time = j.value("time", 0.0);
+        status.rate = j.value("rate", 1.0);
         // `time` is whole seconds; position * length is finer-grained.
         if (status.length > 0 && j.contains("position") && j.at("position").is_number()) {
             status.time = j.at("position").get<double>() * status.length;
@@ -165,11 +182,22 @@ bool VlcSession::Running() {
 }
 
 std::optional<VlcStatus> VlcSession::Poll() const {
+    return Command("");
+}
+
+std::optional<VlcStatus> VlcSession::Command(const std::string& command,
+                                             const std::string& value) const {
+    if (exited_) return std::nullopt;
     httplib::Client client("127.0.0.1", port_);
     client.set_connection_timeout(0, 500'000);
     client.set_read_timeout(1, 0);
     client.set_basic_auth("", password_);
-    auto res = client.Get("/requests/status.json");
+    std::string path = "/requests/status.json";
+    if (!command.empty()) {
+        path += "?command=" + UrlEncode(command);
+        if (!value.empty()) path += "&val=" + UrlEncode(value);
+    }
+    auto res = client.Get(path);
     if (!res || res->status != 200) return std::nullopt;
     return ParseVlcStatus(res->body);
 }

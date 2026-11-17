@@ -58,7 +58,8 @@ json ToJson(const AppConfig& c) {
             {"min_size_mb", c.min_size_mb},
             {"port", c.port},
             {"fullscreen", c.fullscreen},
-            {"vlc", c.vlc}};
+            {"vlc", c.vlc},
+            {"sync_server", c.sync_server}};
 }
 
 AppConfig ApplyJson(AppConfig c, const json& j) {
@@ -67,6 +68,7 @@ AppConfig ApplyJson(AppConfig c, const json& j) {
     if (j.contains("port")) c.port = j.at("port").get<int>();
     if (j.contains("fullscreen")) c.fullscreen = j.at("fullscreen").get<bool>();
     if (j.contains("vlc")) c.vlc = j.at("vlc").get<std::string>();
+    if (j.contains("sync_server")) c.sync_server = j.at("sync_server").get<std::string>();
     return c;
 }
 

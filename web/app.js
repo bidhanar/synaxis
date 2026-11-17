@@ -160,6 +160,7 @@ function toast(msg, kind = '') {
 function renderGate(manage = false) {
   S.pageKey = null;
   closeModal(true);
+  window.Together?.onRoute(route().path, null, S.settings);
   const tiles = S.profiles.map((p) => `
     <button class="profile" data-action="${manage ? 'edit-profile' : 'select-profile'}" data-id="${p.id}">
       <span class="avatar">${avatar(p.avatar)}${manage ? `<span class="avatar-edit">${I.pencil}</span>` : ''}</span>
@@ -273,6 +274,7 @@ function renderShell() {
         <a href="#/shows" data-nav="/shows">TV Shows</a>
         <a href="#/movies" data-nav="/movies">Movies</a>
         <a href="#/list" data-nav="/list">My List</a>
+        ${window.Together?.supported ? '<a href="#/together" data-nav="/together" id="together-link">Watch Together</a>' : ''}
       </nav>
       <div class="nav-right">
         <span class="scan-indicator" id="scan-indicator" hidden></span>
@@ -311,7 +313,18 @@ function renderShell() {
     }, 220);
   });
   renderStatus();
+  updateTogetherLink();
 }
+
+// While you're in a room the nav says so, since Play then starts videos for everyone.
+function updateTogetherLink() {
+  const link = $('#together-link');
+  if (!link) return;
+  const size = window.Together.roomSize();
+  link.classList.toggle('in-room', window.Together.inRoom());
+  link.textContent = window.Together.inRoom() ? `Watch Together · ${size}` : 'Watch Together';
+}
+window.addEventListener('together-changed', updateTogetherLink);
 
 function updateNav(path) {
   $$('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === path));
@@ -331,6 +344,8 @@ async function render() {
   if (!S.profile) return renderGate();
   if (!$('#page')) renderShell();
   const r = route();
+  // The Watch Together page draws itself (see together.js); tell it where we are.
+  window.Together?.onRoute(r.path, S.profile, S.settings);
   const params = new URLSearchParams(r.params);
   params.delete('title');
   const key = `${r.path}?${params}`;
@@ -354,6 +369,11 @@ async function renderPage(r) {
       case '/list': return await renderMyList(page);
       case '/search': return await renderSearch(page, r.params.get('q') || '');
       case '/settings': return await renderSettings(page);
+      case '/together':
+        if (!window.Together?.supported) return void (location.hash = '/home');
+        page.className = '';
+        page.innerHTML = '';
+        return undefined;
       default:
         if (r.path !== '/home') return void (location.hash = '/home');
         return await renderBrowse(page, 'all');
@@ -769,6 +789,12 @@ async function play(titleId, fileId, fromStart) {
     const body = { profile: S.profile.id, title: titleId };
     if (fileId) body.file = fileId;
     if (fromStart) body.from_start = true;
+    // In a room, Play means play for everyone in it.
+    if (window.Together?.inRoom()) {
+      await window.Together.play(body);
+      toast('Starting it for everyone in the room…');
+      return;
+    }
     const res = await api.post('/api/play', body);
     toast(res.start > 0 ? `Resuming at ${fmtClock(res.start)} in VLC…` : 'Opening in VLC…');
     setTimeout(pollStatus, 1200);
@@ -881,6 +907,12 @@ function drawSettings() {
       <label class="switch-row"><input type="checkbox" name="fullscreen" ${d.fullscreen ? 'checked' : ''}><span>Open VLC in fullscreen</span></label>
       <label class="field"><span>VLC program</span><input name="vlc" value="${esc(d.vlc)}" autocomplete="off"></label>
     </section>
+    <section class="panel">
+      <h2>Watch Together</h2>
+      <p class="hint">The sync server passes play, pause and seek between the people in a room (never the video
+        itself). Everyone in a room needs the same address here. It's only contacted while you're in a room.</p>
+      <label class="field"><span>Sync server address</span><input name="sync_server" value="${esc(d.sync_server)}" placeholder="https://…" autocomplete="off"></label>
+    </section>
     <div class="settings-actions">
       <button class="btn btn-play" data-action="save-settings">Save</button>
       <button class="btn btn-ghost" data-action="rescan">${I.refresh}<span>Rescan Now</span></button>
@@ -904,6 +936,7 @@ function readSettingsForm() {
   }
   S.draft.fullscreen = $('[name=fullscreen]', el).checked;
   S.draft.vlc = $('[name=vlc]', el).value.trim() || 'vlc';
+  S.draft.sync_server = $('[name=sync_server]', el).value.trim();
 }
 
 async function saveSettings() {
@@ -911,8 +944,10 @@ async function saveSettings() {
   try {
     const res = await api.post('/api/settings', PLATFORM === 'android'
       ? { min_size_mb: S.draft.min_size_mb, include_camera: S.draft.include_camera }
-      : { roots: S.draft.roots, min_size_mb: S.draft.min_size_mb, fullscreen: S.draft.fullscreen, vlc: S.draft.vlc });
+      : { roots: S.draft.roots, min_size_mb: S.draft.min_size_mb, fullscreen: S.draft.fullscreen, vlc: S.draft.vlc,
+          sync_server: S.draft.sync_server });
     S.settings = res.settings;
+    window.Together?.onRoute(route().path, S.profile, S.settings);
     S.draft = JSON.parse(JSON.stringify(res.settings));
     drawSettings();
     toast(res.rescanning ? 'Saved. Rescanning your library…' : 'Settings saved');
